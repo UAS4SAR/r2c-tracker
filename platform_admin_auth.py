@@ -442,7 +442,7 @@ def _organization_activation_message(
         f"By activating, you confirm that you are authorized to enable "
         f"{organization_name}'s R2C Tracker account in the open-ended extended "
         "beta. R2C Tracker does not accept payments. The organization receives "
-        "a platform-funded $10.00 calendar-month usage allowance. After activation, R2C "
+        "a platform-funded $20.00 calendar-month usage allowance. After activation, R2C "
         "Tracker will sign you in and open the organization administration "
         "page.\n\n"
         "If you were not expecting this invitation, ignore this message. "
@@ -667,15 +667,15 @@ def _organization_extended_beta_allowance_message(
     introductions = {
         "beta_allowance_on_track": (
             f"Current usage for {organization_name} ({designator}) is projected "
-            "to exceed its $10.00 platform-funded allowance this calendar month."
+            "to exceed its $20.00 platform-funded allowance this calendar month."
         ),
         "beta_allowance_exceeded": (
             f"Allocated platform usage for {organization_name} ({designator}) "
-            "has exceeded its $10.00 platform-funded allowance this calendar month."
+            "has exceeded its $20.00 platform-funded allowance this calendar month."
         ),
         "beta_video_disabled": (
             f"Allocated platform usage for {organization_name} ({designator}) "
-            "has reached 90% of its $10.00 platform-funded allowance. Remote "
+            "has reached 90% of its $20.00 platform-funded allowance. Remote "
             f"video streaming is disabled for the remainder of the month ending {month_end}."
         ),
     }

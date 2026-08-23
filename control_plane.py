@@ -112,8 +112,8 @@ AUDIT_EVENT_RECENT_DAYS = 30
 AUDIT_EVENT_RECENT_LIMIT = 25
 AUDIT_EVENT_PAGE_SIZE = 50
 AUDIT_EVENT_EXPORT_LIMIT = 10_000
-EXTENDED_BETA_MONTHLY_ALLOWANCE = Decimal("10.00")
-EXTENDED_BETA_VIDEO_CUTOFF = Decimal("9.00")
+EXTENDED_BETA_MONTHLY_ALLOWANCE = Decimal("20.00")
+EXTENDED_BETA_VIDEO_CUTOFF = Decimal("18.00")
 AUDIT_EVENT_CATEGORY_PREFIXES = {
     "administration": ("organization.", "administrator.", "member."),
     "billing": ("billing.",),
@@ -4845,6 +4845,7 @@ class ControlPlaneStore:
                     )
                 allowance.actual_cost = actual
                 allowance.forecast_cost = forecast
+                allowance.allowance_amount = EXTENDED_BETA_MONTHLY_ALLOWANCE
                 allowance.billing_data_through = billing_data_through
                 allowance.month_ends_at = month_ends_at
                 allowance.updated_at = reconciled_at
@@ -4854,52 +4855,81 @@ class ControlPlaneStore:
                     notification_types.append("beta_allowance_on_track")
                 if actual > EXTENDED_BETA_MONTHLY_ALLOWANCE:
                     notification_types.append("beta_allowance_exceeded")
-                if (
-                    actual >= EXTENDED_BETA_VIDEO_CUTOFF
-                    and allowance.video_disabled_at is None
-                ):
-                    allowance.video_disabled_at = reconciled_at
+                if actual >= EXTENDED_BETA_VIDEO_CUTOFF:
                     notification_types.append("beta_video_disabled")
-                    changed_organizations.add(organization.id)
-                    active_requests = (
-                        await session.scalars(
-                            select(VideoStreamRequest).where(
-                                VideoStreamRequest.organization_id == organization.id,
-                                VideoStreamRequest.state.in_((
-                                    "pending", "probing", "awaiting_approval",
-                                    "approved", "streaming",
-                                )),
+                    if allowance.video_disabled_at is None:
+                        allowance.video_disabled_at = reconciled_at
+                        changed_organizations.add(organization.id)
+                        active_requests = (
+                            await session.scalars(
+                                select(VideoStreamRequest).where(
+                                    VideoStreamRequest.organization_id == organization.id,
+                                    VideoStreamRequest.state.in_((
+                                        "pending", "probing", "awaiting_approval",
+                                        "approved", "streaming",
+                                    )),
+                                )
                             )
-                        )
-                    ).all()
-                    request_ids = [request.id for request in active_requests]
-                    for request in active_requests:
-                        request.state = "stopped"
-                        request.status_message = (
-                            "Remote video disabled for the remainder of the "
-                            "extended beta allowance month."
-                        )
-                        request.stopped_at = reconciled_at
-                    if request_ids:
-                        await session.execute(delete(VideoPreflightExchange).where(
-                            VideoPreflightExchange.request_id.in_(request_ids)
+                        ).all()
+                        request_ids = [request.id for request in active_requests]
+                        for request in active_requests:
+                            request.state = "stopped"
+                            request.status_message = (
+                                "Remote video disabled for the remainder of the "
+                                "extended beta allowance month."
+                            )
+                            request.stopped_at = reconciled_at
+                        if request_ids:
+                            await session.execute(delete(VideoPreflightExchange).where(
+                                VideoPreflightExchange.request_id.in_(request_ids)
+                            ))
+                            await session.execute(delete(VideoMediaExchange).where(
+                                VideoMediaExchange.request_id.in_(request_ids)
+                            ))
+                        session.add(ControlPlaneAuditEvent(
+                            organization_id=organization.id,
+                            actor_type="billing_system",
+                            actor_id="extended-beta-allowance",
+                            event_type="billing.video_disabled",
+                            details_json=json.dumps({
+                                "billing_month": billing_month,
+                                "actual_cost": str(actual),
+                                "allowance": str(EXTENDED_BETA_MONTHLY_ALLOWANCE),
+                                "month_ends_at": month_ends_at.isoformat(),
+                            }),
+                            created_at=reconciled_at,
                         ))
-                        await session.execute(delete(VideoMediaExchange).where(
-                            VideoMediaExchange.request_id.in_(request_ids)
-                        ))
+                elif allowance.video_disabled_at is not None:
+                    allowance.video_disabled_at = None
+                    changed_organizations.add(organization.id)
                     session.add(ControlPlaneAuditEvent(
                         organization_id=organization.id,
                         actor_type="billing_system",
                         actor_id="extended-beta-allowance",
-                        event_type="billing.video_disabled",
+                        event_type="billing.video_restored",
                         details_json=json.dumps({
                             "billing_month": billing_month,
                             "actual_cost": str(actual),
                             "allowance": str(EXTENDED_BETA_MONTHLY_ALLOWANCE),
-                            "month_ends_at": month_ends_at.isoformat(),
+                            "video_cutoff": str(EXTENDED_BETA_VIDEO_CUTOFF),
                         }),
                         created_at=reconciled_at,
                     ))
+                current_event_prefix = (
+                    f"extended-beta:{organization.id}:{billing_month}:"
+                )
+                pending_notifications = (await session.scalars(
+                    select(BillingNotification).where(
+                        BillingNotification.organization_id == organization.id,
+                        BillingNotification.state == "pending",
+                        BillingNotification.event_key.like(
+                            current_event_prefix + "%"
+                        ),
+                    )
+                )).all()
+                for pending_notification in pending_notifications:
+                    if pending_notification.notification_type not in notification_types:
+                        pending_notification.state = "canceled"
                 for notification_type in notification_types:
                     values = {
                         "id": new_id(),

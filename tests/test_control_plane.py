@@ -5,6 +5,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from sqlalchemy import text
 
@@ -2857,13 +2858,13 @@ class ControlPlaneStoreTest(unittest.TestCase):
         reconciled = asyncio.run(self.store.reconcile_extended_beta_allowances(
             billing_month="2026-07",
             billing_data_through=self.now,
-            actual_costs={organization.id: Decimal("9.10")},
-            forecast_costs={organization.id: Decimal("12.00")},
+            actual_costs={organization.id: Decimal("18.10")},
+            forecast_costs={organization.id: Decimal("22.00")},
             now=self.now,
         ))
         self.assertEqual(1, len(reconciled))
         self.assertFalse(reconciled[0].video_streaming_allowed)
-        self.assertEqual(Decimal("10.000000"), reconciled[0].allowance_amount)
+        self.assertEqual(Decimal("20.000000"), reconciled[0].allowance_amount)
         notifications = asyncio.run(self.store.list_pending_billing_notifications())
         self.assertEqual(
             ["beta_allowance_on_track", "beta_video_disabled"],
@@ -2884,8 +2885,8 @@ class ControlPlaneStoreTest(unittest.TestCase):
         asyncio.run(self.store.reconcile_extended_beta_allowances(
             billing_month="2026-07",
             billing_data_through=self.now + timedelta(hours=1),
-            actual_costs={organization.id: Decimal("10.01")},
-            forecast_costs={organization.id: Decimal("12.50")},
+            actual_costs={organization.id: Decimal("20.01")},
+            forecast_costs={organization.id: Decimal("22.50")},
             now=self.now + timedelta(hours=1),
         ))
         notifications = asyncio.run(self.store.list_pending_billing_notifications())
@@ -2907,7 +2908,7 @@ class ControlPlaneStoreTest(unittest.TestCase):
             billing_month="2026-07",
             billing_data_through=self.now,
             actual_costs={organization.id: Decimal("1.00")},
-            forecast_costs={organization.id: Decimal("11.00")},
+            forecast_costs={organization.id: Decimal("21.00")},
             now=self.now,
         ))
         notifications = asyncio.run(self.store.list_pending_billing_notifications())
@@ -2915,6 +2916,52 @@ class ControlPlaneStoreTest(unittest.TestCase):
         self.assertEqual(
             "admin@ncssar.example",
             notifications[0].administrator_email,
+        )
+
+    def test_allowance_increase_updates_current_month_and_restores_video(self):
+        organization = self.create_organization()
+        with (
+            patch(
+                "control_plane.EXTENDED_BETA_MONTHLY_ALLOWANCE",
+                Decimal("10.00"),
+            ),
+            patch(
+                "control_plane.EXTENDED_BETA_VIDEO_CUTOFF",
+                Decimal("9.00"),
+            ),
+        ):
+            previous = asyncio.run(
+                self.store.reconcile_extended_beta_allowances(
+                    billing_month="2026-07",
+                    billing_data_through=self.now,
+                    actual_costs={organization.id: Decimal("9.10")},
+                    forecast_costs={organization.id: Decimal("12.00")},
+                    now=self.now,
+                )
+            )
+        self.assertFalse(previous[0].video_streaming_allowed)
+        self.assertEqual(Decimal("10.000000"), previous[0].allowance_amount)
+
+        current = asyncio.run(self.store.reconcile_extended_beta_allowances(
+            billing_month="2026-07",
+            billing_data_through=self.now + timedelta(hours=1),
+            actual_costs={organization.id: Decimal("9.10")},
+            forecast_costs={organization.id: Decimal("12.00")},
+            now=self.now + timedelta(hours=1),
+        ))
+
+        self.assertTrue(current[0].video_streaming_allowed)
+        self.assertEqual(Decimal("20.000000"), current[0].allowance_amount)
+        self.assertEqual(
+            (),
+            asyncio.run(self.store.list_pending_billing_notifications()),
+        )
+        self.assertIn(
+            "billing.video_restored",
+            {
+                event.event_type
+                for event in asyncio.run(self.store.list_audit_events())
+            },
         )
 
     def test_video_cutoff_stops_an_active_request(self):
@@ -2971,8 +3018,8 @@ class ControlPlaneStoreTest(unittest.TestCase):
         asyncio.run(self.store.reconcile_extended_beta_allowances(
             billing_month="2026-07",
             billing_data_through=self.now,
-            actual_costs={organization.id: Decimal("9.00")},
-            forecast_costs={organization.id: Decimal("9.50")},
+            actual_costs={organization.id: Decimal("18.00")},
+            forecast_costs={organization.id: Decimal("19.50")},
             now=self.now,
         ))
 

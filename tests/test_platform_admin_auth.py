@@ -60,6 +60,7 @@ class PlatformAdminAuthHelpersTest(unittest.TestCase):
             "https://r2c-tracker.com/ncssar/admin#service-status",
         )
         body = message.get_content()
+        self.assertIn("90% of its $20.00 platform-funded allowance", body)
         self.assertIn("disabled for the remainder of the month ending 31 Aug 2026", body)
         self.assertIn("Flight logs", body)
         self.assertIn("R2C-based drone-owner arbitration", body)
@@ -283,7 +284,7 @@ class PlatformAdminAuthHelpersTest(unittest.TestCase):
         self.assertIn("single-use link", message.get_content())
         self.assertIn("open-ended extended beta", message.get_content())
         self.assertIn("does not accept payments", message.get_content())
-        self.assertIn("$10.00 calendar-month usage allowance", message.get_content())
+        self.assertIn("$20.00 calendar-month usage allowance", message.get_content())
         self.assertIn("Do not forward", message.get_content())
         self.assertNotIn("pilot", message.get_content().lower())
         self.assertEqual("admin@ncssar.example", message["To"])

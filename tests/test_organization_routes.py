@@ -2009,7 +2009,7 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertIn("Designators must be unique", created.text)
         activation_match = ACTIVATION_LINK_RE.search(created.text)
         self.assertIsNotNone(activation_match)
-        self.assertIn("$10.00", created.text)
+        self.assertIn("$20.00", created.text)
         self.assertIn("no payments", created.text)
         activation_url = html.unescape(activation_match.group(1))
         activation_path = urlparse(activation_url).path + "?" + urlparse(
@@ -2039,7 +2039,7 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertEqual(200, activated.status_code)
         self.assertIn("NCSSAR administration", activated.text)
         self.assertIn("open-ended extended beta", activated.text)
-        self.assertIn("$10.00", activated.text)
+        self.assertIn("$20.00", activated.text)
         self.assertIn("does not accept payments", activated.text)
 
         campaign_created = self.client.post(
