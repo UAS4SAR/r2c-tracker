@@ -1,4 +1,4 @@
-v1.4.78:
+v1.4.78: deployed
 * Increase each organization's platform-funded calendar-month allowance from $10.00 to $20.00, keep remote video available until 90% ($18.00), and automatically restore current-month streaming disabled under the previous threshold.
 
 v1.4.77: deployed
