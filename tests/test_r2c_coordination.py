@@ -55,7 +55,7 @@ def load_coordination_classes():
         "R2C_HEARTBEAT_SEC": 15,
         "R2C_LEASE_SEC": 45,
         "R2C_HEARTBEAT_ZONE_UPDATE_SEC": 60,
-        "R2C_IDLE_PARK_SEC": 120,
+        "R2C_IDLE_PARK_SEC": 30,
         "R2C_RECOMMENDED_APP_VERSION_CODE": 77,
         "R2C_UPDATE_URL": "https://example.org/r2c",
         "R2C_RECOMMENDED_IOS_APP_BUILD_NUMBER": 12,
@@ -1384,7 +1384,9 @@ class R2CCoordinationHubTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(15, ack["heartbeatSec"])
         self.assertEqual(45, ack["leaseSec"])
         self.assertTrue(ack["idleRecommended"])
-        self.assertEqual(120, ack["idleParkSec"])
+        self.assertEqual(30, ack["idleParkSec"])
+        self.assertTrue(ack["standbyRecommended"])
+        self.assertEqual(30, ack["standbyParkSec"])
         self.assertEqual(77, ack["recommendedAppVersionCode"])
         self.assertEqual("https://example.org/r2c", ack["updateUrl"])
 
@@ -1485,25 +1487,25 @@ class R2CCoordinationHubTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, sum(1 for message in alpha_messages if message.get("type") == "zone_update"))
         self.assertEqual(1, sum(1 for message in bravo_messages if message.get("type") == "zone_update"))
 
-    async def test_idle_message_marks_zone_idle_without_owner_activity(self):
+    async def test_standby_message_marks_standalone_zone_standby_without_owner_activity(self):
         self.ws_alpha.sent_texts.clear()
         self.ws_bravo.sent_texts.clear()
 
         await self.hub.handle_message(self.ws_alpha, {
             "type": "idle",
-            "reason": "no_active_drones",
+            "reason": "standalone_standby",
         })
 
         state = self.hub.zone_store[("MAP1", "zone-alpha")]
         self.assertFalse(state["online"])
-        self.assertEqual("idle", state["connectionState"])
+        self.assertEqual("standby", state["connectionState"])
 
         bravo_messages = [json.loads(text) for text in self.ws_bravo.sent_texts]
         zone_updates = [message for message in bravo_messages if message.get("type") == "zone_update"]
         self.assertEqual(1, len(zone_updates))
         alpha_zone = next(zone for zone in zone_updates[0]["zones"] if zone["zoneId"] == "zone-alpha")
         self.assertFalse(alpha_zone["online"])
-        self.assertEqual("idle", alpha_zone["connectionState"])
+        self.assertEqual("standby", alpha_zone["connectionState"])
 
     async def test_idle_message_is_ignored_while_zone_owns_active_drone(self):
         await self.hub.handle_message(self.ws_alpha, {

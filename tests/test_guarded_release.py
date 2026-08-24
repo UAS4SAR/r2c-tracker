@@ -284,6 +284,8 @@ class GuardedReleaseTest(unittest.TestCase):
         self.assertIn("allow-iap-postgres-r2c-staging", refresh)
         self.assertIn("r2c-release-staging", cleanup)
         self.assertIn('.release-state/staging.json', cleanup)
+        self.assertIn('secrets delete "${secret_name}"', cleanup)
+        self.assertIn("r2c-staging-control-plane-signing-key", cleanup)
         self.assertNotIn("DROP DATABASE IF EXISTS r2c_pilot_tracker", cleanup)
         self.assertIn("r2c_stage_tracker_user", setup)
         self.assertIn("r2c_stage_control_user", setup)

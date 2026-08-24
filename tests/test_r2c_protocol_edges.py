@@ -46,7 +46,7 @@ def load_coordination_classes():
         "R2C_HEARTBEAT_SEC": 15,
         "R2C_LEASE_SEC": 45,
         "R2C_HEARTBEAT_ZONE_UPDATE_SEC": 60,
-        "R2C_IDLE_PARK_SEC": 120,
+        "R2C_IDLE_PARK_SEC": 30,
         "R2C_RECOMMENDED_APP_VERSION_CODE": 0,
         "R2C_UPDATE_URL": "",
         "R2C_DB_CLEANUP_SEC": 86400,

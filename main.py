@@ -608,7 +608,7 @@ R2C_HEARTBEAT_SEC = int(os.environ.get("R2C_HEARTBEAT_SEC", "15"))
 R2C_LEASE_SEC = int(os.environ.get("R2C_LEASE_SEC", "45"))
 R2C_DB_CLEANUP_SEC = int(os.environ.get("R2C_DB_CLEANUP_SEC", "86400"))
 R2C_HEARTBEAT_ZONE_UPDATE_SEC = int(os.environ.get("R2C_HEARTBEAT_ZONE_UPDATE_SEC", "60"))
-R2C_IDLE_PARK_SEC = int(os.environ.get("R2C_IDLE_PARK_SEC", "120"))
+R2C_IDLE_PARK_SEC = int(os.environ.get("R2C_IDLE_PARK_SEC", "30"))
 R2C_RECOMMENDED_APP_VERSION_CODE = int(os.environ.get("R2C_RECOMMENDED_APP_VERSION_CODE", "0") or "0")
 R2C_ORGANIZATION_CONFIG_MIN_APP_BUILD = int(
     os.environ.get("R2C_ORGANIZATION_CONFIG_MIN_APP_BUILD", "134") or "134"
@@ -2271,7 +2271,11 @@ class R2CCoordinationHub:
             caltopo_rtt_ms = conn.caltopo_rtt_ms
             app_version = conn.app_version
             app_version_code = conn.app_version_code
-            connection_state = "idle" if conn.connection_state == "idle" else "disconnected"
+            connection_state = (
+                conn.connection_state
+                if conn.connection_state in {"idle", "standby"}
+                else "disconnected"
+            )
             connected_at_ms = conn.connected_at_ms
             hello_received_at_ms = conn.hello_received_at_ms
             last_seen_ms = conn.last_seen_ms
@@ -3270,6 +3274,8 @@ class R2CCoordinationHub:
             "leaseSec": R2C_LEASE_SEC,
             "idleRecommended": True,
             "idleParkSec": R2C_IDLE_PARK_SEC,
+            "standbyRecommended": True,
+            "standbyParkSec": R2C_IDLE_PARK_SEC,
             "organizationConfigVersionMs": (
                 await globals()["control_plane_store"].get_organization_config_version_ms(
                     organization_id
@@ -3296,6 +3302,12 @@ class R2CCoordinationHub:
 
     async def _handle_idle(self, websocket: WebSocket, payload: dict):
         now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
+        requested_state = (
+            "standby"
+            if str(payload.get("reason", "") or "").strip().lower()
+            == "standalone_standby"
+            else "idle"
+        )
         async with self._lock:
             conn = self._connections.get(websocket)
             if conn is None:
@@ -3323,7 +3335,7 @@ class R2CCoordinationHub:
                     ",".join(active_owner_remote_ids),
                 )
                 return
-            conn.connection_state = "idle"
+            conn.connection_state = requested_state
             conn.last_seen_ms = now_ms
             name = conn.name
             lat = conn.lat
@@ -3334,7 +3346,8 @@ class R2CCoordinationHub:
             reported_map_id = conn.reported_map_id
             coordination_mode = conn.coordination_mode
         logger.info(
-            "r2c zone_idle: map=%s zone=%s guid=%s",
+            "r2c zone_%s: map=%s zone=%s guid=%s",
+            requested_state,
             map_id,
             zone_id,
             guid,
@@ -3352,7 +3365,7 @@ class R2CCoordinationHub:
             now_ms,
             reported_map_id,
             coordination_mode,
-            "idle",
+            requested_state,
             app_version,
             app_version_code,
         )
@@ -6139,7 +6152,9 @@ async def deployment_readiness(
         active_zone_rows = (await session.scalars(
             select(R2CZoneState).where(
                 R2CZoneState.last_seen_ms >= recent_zone_cutoff_ms,
-                func.lower(R2CZoneState.connection_state).not_in(("idle", "disconnected")),
+                func.lower(R2CZoneState.connection_state).not_in(
+                    ("idle", "standby", "disconnected")
+                ),
             )
         )).all()
     activity = {

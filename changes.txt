@@ -1,3 +1,7 @@
+v1.4.79:
+* Let standalone organization tablets verify access and synchronize managed configuration, then enter a 30-second Tracker standby state until an incident, flight, or live-video activity needs coordination.
+* Remove ephemeral release-staging secrets during cleanup so repeated guarded releases do not retain billable secret versions.
+
 v1.4.78: deployed
 * Increase each organization's platform-funded calendar-month allowance from $10.00 to $20.00, keep remote video available until 90% ($18.00), and automatically restore current-month streaming disabled under the previous threshold.
 
