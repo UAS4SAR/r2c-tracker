@@ -44,8 +44,9 @@ The release-critical flow is:
   instance is nearby. Proximity adoption only moves standalone instances.
 - The same `remoteId` can legitimately have a different owner on another
   coordination key.
-- The target deployment size is small: roughly 2-6 zones and a few active drones
-  per zone.
+- Mutual-aid deployments may include 10 or more zones and drones. Advisory
+  aircraft traffic is therefore spatially filtered and never mesh-forwarded by
+  clients.
 
 ## Authentication
 
@@ -402,6 +403,117 @@ messages are one-way: their durable terminal state or bounded lease is the
 resolution, so an additional acknowledgement would add no authority.
 
 ## Zone status broadcasts
+
+## Advisory peer traffic (shadow rollout)
+
+Clients may send a short-lived aircraft position independently of the ownership
+protocol:
+
+```json
+{
+  "type": "traffic_position",
+  "remoteId": "1581F6Z9C24BH0036EJL",
+  "mappedId": "1SAR7DJ",
+  "source": "sei",
+  "sourceEpoch": "stream-session-uuid",
+  "seq": 42,
+  "sampleTs": 1787539200123,
+  "lat": 39.1234,
+  "lng": -121.1234,
+  "altM": 412.5,
+  "altSampleTs": 1787539200123,
+  "flightEpoch": "per-flight-uuid",
+  "altCalibrationState": "locked",
+  "mslAltM": 1845.2,
+  "mslAltSampleTs": 1787539200123,
+  "altCorrectionM": 1432.7,
+  "altCalibrationTs": 1787539150000,
+  "demSource": "usgs-geotiff-local-1m",
+  "demResolutionM": 1.0,
+  "padFt": 100.0,
+  "headingDeg": 87.0
+}
+```
+
+The tracker derives the organization, map, and source zone from the authenticated
+connection, stamps `receivedTs`, changes the type to `peer_traffic_position`, and
+fans the report out to other online zones on that effective map. Reports are held
+in memory for at most 30 seconds for reconnect replay; they are not persisted and
+never assign or refresh ownership.
+
+Fan-out is spatially bounded: a report is delivered only when the aircraft is
+within one statute mile (1,609.344 meters) of the receiving R2C device's latest
+reported position. A receiver without a usable position is ineligible. The same
+rule applies to reconnect replay. This leaves one aircraft-to-tracker uplink per
+source while avoiding incident-wide delivery to distant search segments.
+
+`sourceEpoch + seq` suppresses reordering within a producer session. Receivers
+must calculate both source age (`now - sampleTs`) and local receive age. During
+the shadow gate, receivers log these values only. A later map gate may display
+age-qualified reports, but a stale report must never drive a proximity alert.
+`altSampleTs` is evaluated independently because a fresh SEI horizontal position
+may carry either a freshly validated SEI relative-up value or the last RID
+altitude. The latter must not be treated as a fresh elevation.
+
+### Confirmation-anchored MSL altitude shadow
+
+The R2C device that locally confirms and owns a drone may lock one altitude
+correction for that flight while the drone is still on the ground:
+
+```
+correctionM = takeoffDemMslM - droneReportedGroundAltM
+mslAltM = droneReportedAltM + correctionM
+```
+
+For DJI SEI, the clients first validate `relativeUpM` against RID during the
+overlap window. Once validated for the current stream epoch, they express it in
+the same raw flight datum as the confirmation sample:
+
+```
+droneReportedAltM = droneReportedGroundAltM + relativeUpM
+mslAltM = takeoffDemMslM + relativeUpM
+```
+
+That makes both `sampleTs` and `mslAltSampleTs` fresh from SEI after RID range is
+lost. If vertical validation or the flight calibration is unavailable, the
+client retains the independent, potentially older RID altitude timestamp and
+does not claim a normalized MSL value.
+
+`flightEpoch` identifies that flight independently of the producer/session
+`sourceEpoch`. `altCalibrationState` is `unconfirmed`, `pending`, `locked`, or
+`unavailable`. Only a `locked` calibration from the tracker-confirmed owner is
+allowed to retain `mslAltM`; the tracker strips normalized altitude supplied by
+another observer. A new flight requires a new correction. Raw `altM` remains in
+the shadow message for diagnosis, and `mslAltSampleTs` remains independent of the
+horizontal sample timestamp.
+
+This remains advisory data: neither raw nor normalized peer altitude currently
+renders a map aircraft or participates in proximity alerts.
+
+### Adaptive cadence shadow
+
+Clients report their locally configured proximity-alert distance as `padFt`.
+The tracker selects a rate from the nearest different aircraft using the more
+conservative (larger) PAD for that pair:
+
+| Nearest-aircraft separation | `shadowIntervalMs` |
+| --- | ---: |
+| up to 5 x PAD | 1000 |
+| up to 10 x PAD | 2000 |
+| up to 20 x PAD | 4000 |
+| up to 40 x PAD | 8000 |
+| farther or undiscovered | 16000 |
+
+`incidentPadFt` records the smallest active reported PAD for incident-policy
+evaluation, while `shadowSchedulingPadFt` records the conservative pair value
+used for cadence. The tracker returns the selected values to the producer as a
+`traffic_schedule` message tied to the producer's `remoteId`, `source`,
+`sourceEpoch`, and `seq`. A matching client applies `shadowIntervalMs` to later
+shadow reports, bounded to 1-16 seconds. A missing, stale-session, or malformed
+schedule leaves the safe one-second default in place; 16 seconds is the
+far-field discovery pulse. This still changes only advisory transport cadence,
+not map display or proximity-alert behavior.
+
 
 Every zone on a map receives `zone_update` payloads like:
 

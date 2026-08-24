@@ -1091,6 +1091,239 @@ class R2CCoordinationHubTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(any("relay_sighting" in text for text in self.ws_alpha.sent_texts[before:]))
 
+    async def test_peer_traffic_broadcasts_to_other_zone_without_ownership(self):
+        now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
+        bravo = self.hub._connections[self.ws_bravo]
+        bravo.lat = 39.2505
+        bravo.lng = -121.2505
+        alpha_before = len(self.ws_alpha.sent_texts)
+        bravo_before = len(self.ws_bravo.sent_texts)
+
+        await self.hub.handle_message(self.ws_alpha, {
+            "type": "traffic_position",
+            "remoteId": "DRONE-TRAFFIC",
+            "mappedId": "1SAR7DJ",
+            "source": "sei",
+            "sourceEpoch": "stream-epoch-1",
+            "seq": 7,
+            "sampleTs": now_ms - 1800,
+            "lat": 39.25,
+            "lng": -121.25,
+            "altM": 140.0,
+            "altSampleTs": now_ms - 9_000,
+        })
+
+        sender_messages = [json.loads(text) for text in self.ws_alpha.sent_texts[alpha_before:]]
+        schedule = next(item for item in sender_messages if item.get("type") == "traffic_schedule")
+        self.assertEqual("DRONE-TRAFFIC", schedule["remoteId"])
+        self.assertEqual("stream-epoch-1", schedule["sourceEpoch"])
+        self.assertEqual(16_000, schedule["shadowIntervalMs"])
+        messages = [json.loads(text) for text in self.ws_bravo.sent_texts[bravo_before:]]
+        traffic = [item for item in messages if item.get("type") == "peer_traffic_position"]
+        self.assertEqual(1, len(traffic))
+        self.assertEqual("zone-alpha", traffic[0]["fromZoneId"])
+        self.assertEqual("sei", traffic[0]["source"])
+        self.assertEqual(7, traffic[0]["seq"])
+        self.assertEqual(now_ms - 9_000, traffic[0]["altSampleTs"])
+        self.assertIn("receivedTs", traffic[0])
+        self.assertNotIn(("MAP1", "DRONE-TRAFFIC"), self.hub._owners)
+
+    def test_peer_traffic_shadow_rate_bands(self):
+        pad_ft = 100.0
+        pad_m = pad_ft * 0.3048
+        self.assertEqual(1_000, self.hub._shadow_traffic_interval_ms(5 * pad_m, pad_ft))
+        self.assertEqual(2_000, self.hub._shadow_traffic_interval_ms(10 * pad_m, pad_ft))
+        self.assertEqual(4_000, self.hub._shadow_traffic_interval_ms(20 * pad_m, pad_ft))
+        self.assertEqual(8_000, self.hub._shadow_traffic_interval_ms(40 * pad_m, pad_ft))
+        self.assertEqual(16_000, self.hub._shadow_traffic_interval_ms(41 * pad_m, pad_ft))
+        self.assertEqual(16_000, self.hub._shadow_traffic_interval_ms(None, pad_ft))
+
+    async def test_peer_traffic_locked_msl_requires_confirmed_owner(self):
+        now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
+        bravo = self.hub._connections[self.ws_bravo]
+        bravo.lat = 39.2505
+        bravo.lng = -121.2505
+        await self.hub.handle_message(self.ws_alpha, {
+            "type": "drone_confirmed",
+            "remoteId": "DRONE-MSL",
+            "mappedId": "1SAR7DJ",
+        })
+        before = len(self.ws_bravo.sent_texts)
+        await self.hub.handle_message(self.ws_alpha, {
+            "type": "traffic_position",
+            "remoteId": "DRONE-MSL",
+            "mappedId": "1SAR7DJ",
+            "source": "sei",
+            "sourceEpoch": "stream-epoch-1",
+            "flightEpoch": "flight-epoch-1",
+            "seq": 1,
+            "sampleTs": now_ms,
+            "lat": 39.25,
+            "lng": -121.25,
+            "altM": 140.0,
+            "altSampleTs": now_ms - 500,
+            "altCalibrationState": "locked",
+            "mslAltM": 151.5,
+            "mslAltSampleTs": now_ms - 500,
+            "altCorrectionM": 11.5,
+            "altCalibrationTs": now_ms - 1_000,
+            "demSource": "usgs-geotiff-local-1m",
+            "demResolutionM": 1.0,
+        })
+        messages = [json.loads(text) for text in self.ws_bravo.sent_texts[before:]]
+        traffic = next(item for item in messages if item.get("type") == "peer_traffic_position")
+        self.assertEqual("locked", traffic["altCalibrationState"])
+        self.assertEqual(151.5, traffic["mslAltM"])
+        self.assertEqual("flight-epoch-1", traffic["flightEpoch"])
+
+        alpha = self.hub._connections[self.ws_alpha]
+        alpha.lat = 39.25
+        alpha.lng = -121.25
+        alpha_before = len(self.ws_alpha.sent_texts)
+        await self.hub.handle_message(self.ws_bravo, {
+            "type": "traffic_position",
+            "remoteId": "DRONE-MSL",
+            "source": "rid",
+            "sourceEpoch": "other-observer",
+            "flightEpoch": "other-flight",
+            "seq": 1,
+            "sampleTs": now_ms,
+            "lat": 39.2505,
+            "lng": -121.2505,
+            "altCalibrationState": "locked",
+            "mslAltM": 999.0,
+            "mslAltSampleTs": now_ms,
+        })
+        messages = [json.loads(text) for text in self.ws_alpha.sent_texts[alpha_before:]]
+        traffic = next(item for item in messages if item.get("type") == "peer_traffic_position")
+        self.assertEqual("unavailable", traffic["altCalibrationState"])
+        self.assertNotIn("mslAltM", traffic)
+
+    async def test_peer_traffic_reports_shadow_pair_interval_and_incident_min_pad(self):
+        now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
+        bravo = self.hub._connections[self.ws_bravo]
+        bravo.lat = 39.2505
+        bravo.lng = -121.2505
+        alpha = self.hub._connections[self.ws_alpha]
+        alpha.lat = 39.25
+        alpha.lng = -121.25
+        await self.hub.handle_message(self.ws_alpha, {
+            "type": "traffic_position",
+            "remoteId": "DRONE-A",
+            "source": "rid",
+            "sourceEpoch": "alpha",
+            "seq": 1,
+            "sampleTs": now_ms,
+            "lat": 39.25,
+            "lng": -121.25,
+            "padFt": 100.0,
+        })
+        before = len(self.ws_alpha.sent_texts)
+        await self.hub.handle_message(self.ws_bravo, {
+            "type": "traffic_position",
+            "remoteId": "DRONE-B",
+            "source": "rid",
+            "sourceEpoch": "bravo",
+            "seq": 1,
+            "sampleTs": now_ms,
+            "lat": 39.2505,
+            "lng": -121.2505,
+            "padFt": 80.0,
+        })
+        messages = [json.loads(text) for text in self.ws_alpha.sent_texts[before:]]
+        traffic = next(item for item in messages if item.get("type") == "peer_traffic_position")
+        self.assertEqual(1_000, traffic["shadowIntervalMs"])
+        self.assertEqual(80.0, traffic["incidentPadFt"])
+        self.assertEqual(100.0, traffic["shadowSchedulingPadFt"])
+        schedules = [
+            json.loads(text) for text in self.ws_bravo.sent_texts
+            if json.loads(text).get("type") == "traffic_schedule"
+        ]
+        self.assertEqual(1_000, schedules[-1]["shadowIntervalMs"])
+        self.assertEqual(80.0, schedules[-1]["incidentPadFt"])
+        self.assertEqual(100.0, schedules[-1]["shadowSchedulingPadFt"])
+
+    async def test_peer_traffic_does_not_fan_out_beyond_one_mile(self):
+        now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
+        before = len(self.ws_bravo.sent_texts)
+        await self.hub.handle_message(self.ws_alpha, {
+            "type": "traffic_position",
+            "remoteId": "DRONE-DISTANT",
+            "source": "rid",
+            "sourceEpoch": "rid-session-1",
+            "seq": 1,
+            "sampleTs": now_ms,
+            "lat": 39.1,
+            "lng": -121.1,
+        })
+        self.assertEqual(before, len(self.ws_bravo.sent_texts))
+
+    async def test_peer_traffic_rejects_duplicate_sequence_in_same_epoch(self):
+        now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
+        payload = {
+            "type": "traffic_position",
+            "remoteId": "DRONE-TRAFFIC",
+            "source": "rid",
+            "sourceEpoch": "rid-session-1",
+            "seq": 3,
+            "sampleTs": now_ms,
+            "lat": 39.25,
+            "lng": -121.25,
+        }
+        await self.hub.handle_message(self.ws_alpha, payload)
+        before = len(self.ws_bravo.sent_texts)
+        duplicate = dict(payload)
+        duplicate["lat"] = 40.0
+        await self.hub.handle_message(self.ws_alpha, duplicate)
+        self.assertEqual(before, len(self.ws_bravo.sent_texts))
+
+    async def test_peer_traffic_replay_is_bounded_by_receive_age(self):
+        now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
+        await self.hub.handle_message(self.ws_alpha, {
+            "type": "traffic_position",
+            "remoteId": "DRONE-FRESH",
+            "source": "sei",
+            "sourceEpoch": "stream-epoch-1",
+            "seq": 1,
+            "sampleTs": now_ms,
+            "lat": 39.25,
+            "lng": -121.25,
+        })
+        scope = self.hub._scope_key("legacy", "MAP1")
+        stored = next(iter(self.hub._peer_traffic_by_map[scope].values()))
+        stored["receivedTs"] = now_ms - self.hub.PEER_TRAFFIC_RETENTION_MS - 1
+        bravo = self.hub._connections[self.ws_bravo]
+        bravo.lat = 39.2505
+        bravo.lng = -121.2505
+        self.ws_bravo.sent_texts.clear()
+        await self.hub._send_recent_peer_traffic(self.ws_bravo, "legacy", "MAP1", now_ms)
+        self.assertEqual([], self.ws_bravo.sent_texts)
+
+    async def test_peer_traffic_replay_uses_same_one_mile_radius(self):
+        now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
+        await self.hub.handle_message(self.ws_alpha, {
+            "type": "traffic_position",
+            "remoteId": "DRONE-REPLAY",
+            "source": "sei",
+            "sourceEpoch": "stream-epoch-1",
+            "seq": 1,
+            "sampleTs": now_ms,
+            "lat": 39.25,
+            "lng": -121.25,
+        })
+        bravo = self.hub._connections[self.ws_bravo]
+        self.ws_bravo.sent_texts.clear()
+        bravo.lat = 39.2505
+        bravo.lng = -121.2505
+        await self.hub._send_recent_peer_traffic(self.ws_bravo, "legacy", "MAP1", now_ms)
+        self.assertEqual(1, len(self.ws_bravo.sent_texts))
+
+        self.ws_bravo.sent_texts.clear()
+        bravo.lat = 39.2
+        bravo.lng = -121.2
+        await self.hub._send_recent_peer_traffic(self.ws_bravo, "legacy", "MAP1", now_ms)
+        self.assertEqual([], self.ws_bravo.sent_texts)
+
     async def test_sighting_from_owner_is_not_relayed_back_to_owner(self):
         await self.hub.handle_message(self.ws_alpha, {
             "type": "first_sighting",

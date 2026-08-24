@@ -1373,6 +1373,8 @@ class R2CCoordinationHub:
     COORDINATION_MODE_STANDALONE = "standalone"
     VIDEO_THUMBNAIL_MAX_BYTES = 256 * 1024
     VIDEO_THUMBNAIL_TTL_SECONDS = 90
+    PEER_TRAFFIC_RETENTION_MS = 30_000
+    PEER_TRAFFIC_RADIUS_M = 1609.344
 
     def __init__(self):
         self._lock = asyncio.Lock()
@@ -1383,6 +1385,11 @@ class R2CCoordinationHub:
         self._zones_by_map: dict[tuple[str, str], dict[str, R2CZoneConnection]] = {}
         self._owners: dict[tuple[str, str, str], dict] = {}
         self._confirmed_drones_by_map: dict[tuple[str, str], dict[str, dict]] = {}
+        # Latest peer aircraft reports are deliberately memory-only. They are
+        # advisory traffic, not ownership sightings or a flight archive.
+        self._peer_traffic_by_map: dict[
+            tuple[str, str], dict[tuple[str, str, str], dict]
+        ] = {}
         self._confirmation_event_seq: int = 0
         self._last_heartbeat_zone_update_ms_by_map: dict[tuple[str, str], int] = {}
         self._sweep_task: Optional[asyncio.Task] = None
@@ -1934,6 +1941,21 @@ class R2CCoordinationHub:
         )
         return 2.0 * radius_m * math.atan2(math.sqrt(haversine), math.sqrt(1.0 - haversine))
 
+    @staticmethod
+    def _shadow_traffic_interval_ms(distance_m: Optional[float], pad_ft: Optional[float]) -> int:
+        if distance_m is None or pad_ft is None or pad_ft <= 0:
+            return 16_000
+        multiples = distance_m / (pad_ft * 0.3048)
+        if multiples <= 5:
+            return 1_000
+        if multiples <= 10:
+            return 2_000
+        if multiples <= 20:
+            return 4_000
+        if multiples <= 40:
+            return 8_000
+        return 16_000
+
     @classmethod
     def _standalone_map_id_for_zone(cls, zone_id: str, guid: str) -> str:
         return f"{cls.STANDALONE_PREFIX}{cls._sanitize_standalone_key(zone_id or guid)}"
@@ -2359,6 +2381,8 @@ class R2CCoordinationHub:
             await self._handle_first_sighting(websocket, payload)
         elif mtype == "sighting":
             await self._handle_sighting(websocket, payload)
+        elif mtype == "traffic_position":
+            await self._handle_traffic_position(websocket, payload)
         elif mtype == "drone_lost":
             await self._handle_drone_lost(websocket, payload)
         elif mtype == "drone_confirmed":
@@ -3299,6 +3323,7 @@ class R2CCoordinationHub:
         await websocket.send_text(json.dumps(hello_ack))
         await self.broadcast_zone_update(organization_id, map_id)
         await self._send_recent_drone_confirmations(websocket, organization_id, map_id, now_ms)
+        await self._send_recent_peer_traffic(websocket, organization_id, map_id, now_ms)
 
     async def _handle_idle(self, websocket: WebSocket, payload: dict):
         now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
@@ -3653,6 +3678,274 @@ class R2CCoordinationHub:
             await target.websocket.send_text(json.dumps(relay))
         except Exception as e:
             logger.warning("relay_sighting failed for %s/%s: %s", map_id, remote_id, e)
+
+    async def _handle_traffic_position(self, websocket: WebSocket, payload: dict):
+        """Fan out short-lived advisory aircraft traffic to incident peers.
+
+        This path intentionally does not consult or refresh ownership and does
+        not persist reports. Clients initially consume it in shadow mode so
+        end-to-end age can be measured before it affects the map or alerts.
+        """
+        remote_id = str(payload.get("remoteId", "") or "").strip()
+        source = str(payload.get("source", "") or "").strip().lower()
+        source_epoch = str(payload.get("sourceEpoch", "") or "").strip()
+        try:
+            latitude = float(payload.get("lat"))
+            longitude = float(payload.get("lng"))
+            sample_ts = int(payload.get("sampleTs"))
+            sequence = int(payload.get("seq"))
+        except (TypeError, ValueError):
+            return
+        if (
+            not remote_id
+            or source not in {"rid", "sei"}
+            or not source_epoch
+            or len(source_epoch) > 64
+            or sequence < 0
+            or not math.isfinite(latitude)
+            or not math.isfinite(longitude)
+            or not (-90.0 <= latitude <= 90.0)
+            or not (-180.0 <= longitude <= 180.0)
+        ):
+            return
+        now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
+        if sample_ts <= 0 or sample_ts > now_ms + 60_000:
+            return
+        async with self._lock:
+            organization_id, map_id, from_zone_id, guid = self._message_context(websocket, payload)
+            if not map_id or not from_zone_id:
+                return
+            scope_key = self._scope_key(organization_id, map_id)
+            reports = self._peer_traffic_by_map.setdefault(scope_key, {})
+            report_key = (guid or from_zone_id, remote_id, source)
+            previous = reports.get(report_key)
+            if (
+                previous is not None
+                and previous.get("sourceEpoch") == source_epoch
+                and int(previous.get("seq", -1)) >= sequence
+            ):
+                return
+            report = {
+                "type": "peer_traffic_position",
+                "mapId": map_id,
+                "remoteId": remote_id,
+                "mappedId": str(payload.get("mappedId", "") or ""),
+                "source": source,
+                "sourceEpoch": source_epoch,
+                "seq": sequence,
+                "sampleTs": sample_ts,
+                "receivedTs": now_ms,
+                "lat": latitude,
+                "lng": longitude,
+                "fromZoneId": from_zone_id,
+            }
+            try:
+                pad_ft = float(payload.get("padFt"))
+            except (TypeError, ValueError):
+                pad_ft = None
+            if pad_ft is not None and math.isfinite(pad_ft) and 0 < pad_ft <= 10_000:
+                report["padFt"] = pad_ft
+            for field in ("altM", "headingDeg", "groundSpeedKnots", "verticalRateFpm"):
+                value = payload.get(field)
+                if value is None:
+                    continue
+                try:
+                    finite_value = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(finite_value):
+                    report[field] = finite_value
+            if "altM" in report:
+                try:
+                    altitude_sample_ts = int(payload.get("altSampleTs", sample_ts))
+                except (TypeError, ValueError):
+                    altitude_sample_ts = sample_ts
+                if altitude_sample_ts > 0 and altitude_sample_ts <= now_ms + 60_000:
+                    report["altSampleTs"] = altitude_sample_ts
+            flight_epoch = str(payload.get("flightEpoch", "") or "").strip()
+            calibration_state = str(
+                payload.get("altCalibrationState", "unconfirmed") or "unconfirmed"
+            ).strip().lower()
+            if calibration_state not in {"unconfirmed", "pending", "locked", "unavailable"}:
+                calibration_state = "unavailable"
+            report["altCalibrationState"] = calibration_state
+            if flight_epoch and len(flight_epoch) <= 128:
+                report["flightEpoch"] = flight_epoch
+
+            owner = self._owners.get((organization_id, map_id, remote_id))
+            owner_authoritative = owner is not None and (
+                owner.get("owner_zone_id") == from_zone_id
+                or (guid and owner.get("owner_guid") == guid)
+            )
+            if calibration_state == "locked" and flight_epoch and owner_authoritative:
+                try:
+                    msl_altitude = float(payload.get("mslAltM"))
+                    msl_sample_ts = int(payload.get("mslAltSampleTs"))
+                except (TypeError, ValueError):
+                    msl_altitude = None
+                    msl_sample_ts = 0
+                if (
+                    msl_altitude is not None
+                    and math.isfinite(msl_altitude)
+                    and -1_000 <= msl_altitude <= 30_000
+                    and 0 < msl_sample_ts <= now_ms + 60_000
+                ):
+                    report["mslAltM"] = msl_altitude
+                    report["mslAltSampleTs"] = msl_sample_ts
+                    for field in ("altCorrectionM", "demResolutionM"):
+                        try:
+                            value = float(payload.get(field))
+                        except (TypeError, ValueError):
+                            continue
+                        if math.isfinite(value):
+                            report[field] = value
+                    try:
+                        calibration_ts = int(payload.get("altCalibrationTs"))
+                    except (TypeError, ValueError):
+                        calibration_ts = 0
+                    if 0 < calibration_ts <= now_ms + 60_000:
+                        report["altCalibrationTs"] = calibration_ts
+                    dem_source = str(payload.get("demSource", "") or "").strip()
+                    if dem_source:
+                        report["demSource"] = dem_source[:128]
+            elif calibration_state == "locked":
+                report["altCalibrationState"] = "unavailable"
+            reports[report_key] = report
+            cutoff_ms = now_ms - self.PEER_TRAFFIC_RETENTION_MS
+            for key, stored in list(reports.items()):
+                if int(stored.get("receivedTs", 0)) < cutoff_ms:
+                    reports.pop(key, None)
+            active_reports = list(reports.values())
+            valid_incident_pads = [
+                float(stored["padFt"])
+                for stored in active_reports
+                if isinstance(stored.get("padFt"), (int, float))
+                and float(stored["padFt"]) > 0
+            ]
+            if valid_incident_pads:
+                report["incidentPadFt"] = min(valid_incident_pads)
+            nearest_distance_m = None
+            scheduling_pad_ft = report.get("padFt")
+            for stored in active_reports:
+                if stored is report or str(stored.get("remoteId", "")) == remote_id:
+                    continue
+                distance_m = self._distance_meters(
+                    latitude,
+                    longitude,
+                    float(stored.get("lat", 0.0)),
+                    float(stored.get("lng", 0.0)),
+                )
+                if nearest_distance_m is None or distance_m < nearest_distance_m:
+                    nearest_distance_m = distance_m
+                    other_pad = stored.get("padFt")
+                    scheduling_pad_ft = max(
+                        [value for value in (report.get("padFt"), other_pad) if value is not None],
+                        default=None,
+                    )
+            report["shadowIntervalMs"] = self._shadow_traffic_interval_ms(
+                nearest_distance_m, scheduling_pad_ft
+            )
+            if nearest_distance_m is not None:
+                report["shadowNearestDistanceM"] = nearest_distance_m
+            if scheduling_pad_ft is not None:
+                report["shadowSchedulingPadFt"] = scheduling_pad_ft
+            candidate_recipients = [
+                zone for zone in self._zones_by_map.get(scope_key, {}).values()
+                if zone.websocket is not None and zone.websocket is not websocket
+            ]
+            recipients = [
+                zone for zone in candidate_recipients
+                if (
+                    self._has_usable_location(zone.lat, zone.lng)
+                    and self._distance_meters(
+                        latitude, longitude, zone.lat, zone.lng
+                    ) <= self.PEER_TRAFFIC_RADIUS_M
+                )
+            ]
+        text = json.dumps(report)
+        schedule = {
+            "type": "traffic_schedule",
+            "remoteId": remote_id,
+            "source": source,
+            "sourceEpoch": source_epoch,
+            "seq": sequence,
+            "shadowIntervalMs": report.get("shadowIntervalMs", 1_000),
+            "incidentPadFt": report.get("incidentPadFt"),
+            "shadowNearestDistanceM": report.get("shadowNearestDistanceM"),
+            "shadowSchedulingPadFt": report.get("shadowSchedulingPadFt"),
+            "receivedTs": now_ms,
+        }
+        try:
+            await websocket.send_text(json.dumps({
+                key: value for key, value in schedule.items() if value is not None
+            }))
+        except Exception as exc:
+            logger.warning(
+                "peer traffic schedule failed for %s/%s: %s",
+                map_id,
+                from_zone_id,
+                exc,
+            )
+        for zone in recipients:
+            try:
+                await zone.websocket.send_text(text)
+            except Exception as exc:
+                logger.warning(
+                    "peer traffic broadcast failed for %s/%s: %s",
+                    map_id,
+                    zone.zone_id,
+                    exc,
+                )
+        logger.info(
+            "r2c peer_traffic_shadow: map=%s remote_id=%s source=%s from_zone=%s transport_age_ms=%s alt_age_ms=%s msl_alt_age_ms=%s candidate_recipients=%s recipients=%s alt_state=%s incident_pad_ft=%s nearest_distance_m=%s scheduling_pad_ft=%s shadow_interval_ms=%s",
+            map_id,
+            remote_id,
+            source,
+            from_zone_id,
+            max(0, now_ms - sample_ts),
+            max(0, now_ms - int(report.get("altSampleTs", sample_ts))),
+            (
+                max(0, now_ms - int(report["mslAltSampleTs"]))
+                if "mslAltSampleTs" in report else None
+            ),
+            len(candidate_recipients),
+            len(recipients),
+            report.get("altCalibrationState"),
+            report.get("incidentPadFt"),
+            report.get("shadowNearestDistanceM"),
+            report.get("shadowSchedulingPadFt"),
+            report.get("shadowIntervalMs"),
+        )
+
+    async def _send_recent_peer_traffic(
+        self, websocket: WebSocket, organization_id: str, map_id: str, now_ms: int
+    ):
+        async with self._lock:
+            cutoff_ms = now_ms - self.PEER_TRAFFIC_RETENTION_MS
+            recipient = self._connections.get(websocket)
+            if (
+                recipient is None
+                or not self._has_usable_location(recipient.lat, recipient.lng)
+            ):
+                return
+            reports = [
+                dict(report)
+                for report in self._peer_traffic_by_map.get(
+                    self._scope_key(organization_id, map_id), {}
+                ).values()
+                if (
+                    int(report.get("receivedTs", 0)) >= cutoff_ms
+                    and str(report.get("fromZoneId", "")) != recipient.zone_id
+                    and self._distance_meters(
+                        float(report.get("lat", 0.0)),
+                        float(report.get("lng", 0.0)),
+                        recipient.lat,
+                        recipient.lng,
+                    ) <= self.PEER_TRAFFIC_RADIUS_M
+                )
+            ]
+        for report in reports:
+            await websocket.send_text(json.dumps(report))
 
     async def _handle_drone_confirmed(self, websocket: WebSocket, payload: dict):
         remote_id = payload.get("remoteId", "")
