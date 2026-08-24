@@ -1,4 +1,4 @@
-v1.4.80:
+v1.4.80: deployed
 * Relay short-lived RID and SEI aircraft positions only to incident peers within one mile, preserving independent source and altitude freshness without changing ownership, map icons, or proximity alerts.
 * Normalize confirmed-owner altitude to MSL with a per-flight takeoff correction, and exchange the calibration and DEM provenance needed to compare aircraft using an equivalent vertical reference.
 * Return a bounded 1-16 second advisory update cadence based on nearest-aircraft separation and the conservative pair proximity distance, while retaining a far-field discovery pulse and the smallest active incident PAD for policy evaluation.
