@@ -1,4 +1,4 @@
-v1.4.81: pending review
+v1.4.81: deployed
 * Accept and retain the current managed-pilot acknowledgment so valid RID2Caltopo website requests no longer end on the request error page.
 * Email the platform contact and copy the requester with the same request details and exact accepted acknowledgment, including assumption of responsibility, developer hold-harmless terms, and the California Civil Code section 1542 waiver for counsel review.
 
