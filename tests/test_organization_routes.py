@@ -27,6 +27,7 @@ from control_plane import (
     ControlPlaneStore,
     DeviceCredential,
     DeviceCredentialRecord,
+    MANAGED_ACCESS_TERMS_TEXT,
     MANAGED_ACCESS_TERMS_VERSION,
     OrganizationUser,
     recording_link_code,
@@ -108,6 +109,7 @@ class FakeOrganizationEmailSender:
         self.activation_messages = []
         self.member_activation_messages = []
         self.administrator_change_messages = []
+        self.managed_access_messages = []
 
     def send_organization_password_reset(self, **message):
         self.password_resets.append(message)
@@ -126,6 +128,9 @@ class FakeOrganizationEmailSender:
 
     def send_organization_funding_exhausted(self, **message):
         self.access_messages.append(message)
+
+    def send_managed_access_request(self, **message):
+        self.managed_access_messages.append(message)
 
 
 HIDDEN_TOKEN_RE = re.compile(r'name="form_token" value="([^"]+)"')
@@ -2433,8 +2438,18 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             "source_host": "rid2caltopo.org",
             "terms_acknowledged": "yes",
             "terms_version": MANAGED_ACCESS_TERMS_VERSION,
+            "terms_text": MANAGED_ACCESS_TERMS_TEXT,
         }
-        with patch.object(main, "MANAGED_REQUEST_INGEST_KEY", "intake-secret"):
+        sender = FakeOrganizationEmailSender()
+        with (
+            patch.object(main, "MANAGED_REQUEST_INGEST_KEY", "intake-secret"),
+            patch.object(main, "platform_admin_email_sender", sender),
+            patch.object(
+                main,
+                "MANAGED_REQUEST_NOTIFICATION_EMAIL",
+                "kjtsar@kjt.us",
+            ),
+        ):
             denied = self.client.post(
                 "/managed-access-requests",
                 data=request_data,
@@ -2453,9 +2468,24 @@ class OrganizationRouteFlowTest(unittest.TestCase):
                 data=request_data,
                 headers={"Authorization": "Bearer intake-secret"},
             )
+            altered_terms = self.client.post(
+                "/managed-access-requests",
+                data={**request_data, "terms_text": MANAGED_ACCESS_TERMS_TEXT + " altered"},
+                headers={"Authorization": "Bearer intake-secret"},
+            )
         self.assertEqual(403, denied.status_code)
         self.assertEqual(422, missing_acknowledgement.status_code)
         self.assertEqual(200, accepted.status_code)
+        self.assertEqual(422, altered_terms.status_code)
+        self.assertEqual(1, len(sender.managed_access_messages))
+        self.assertEqual(
+            "jamie@example.org",
+            sender.managed_access_messages[0]["requester_email"],
+        )
+        self.assertEqual(
+            MANAGED_ACCESS_TERMS_TEXT,
+            sender.managed_access_messages[0]["terms_text"],
+        )
         page = self.client.get("/platform-admin/organizations")
         self.assertIn("Managed pilot requests", page.text)
         self.assertIn("Jamie Responder", page.text)

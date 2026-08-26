@@ -20,6 +20,7 @@ from control_plane import (
     DuplicateOrganizationError,
     EnrollmentCampaign,
     InvalidOrganizationError,
+    MANAGED_ACCESS_TERMS_TEXT,
     MANAGED_ACCESS_TERMS_VERSION,
     OrganizationUser,
     UsageDaily,
@@ -639,7 +640,10 @@ class ControlPlaneStoreTest(unittest.TestCase):
         self.assertEqual("organization.unarchived", audit_events[0].event_type)
 
     def test_managed_access_requests_are_deduplicated_and_retain_phone(self):
-        self.assertEqual("2026-08-07", MANAGED_ACCESS_TERMS_VERSION)
+        self.assertEqual("2026-08-25", MANAGED_ACCESS_TERMS_VERSION)
+        self.assertIn("hold harmless Ken Taylor", MANAGED_ACCESS_TERMS_TEXT)
+        self.assertIn("California Civil Code section 1542", MANAGED_ACCESS_TERMS_TEXT)
+        self.assertIn("unknown or unsuspected", MANAGED_ACCESS_TERMS_TEXT)
         values = {
             "requester_name": "Jamie Responder",
             "requester_email": "jamie@example.org",
@@ -668,7 +672,7 @@ class ControlPlaneStoreTest(unittest.TestCase):
                 self.store.create_managed_access_request(
                     **{
                         **values,
-                        "terms_version": "2026-08-06",
+                        "terms_version": "2026-08-08",
                     }
                 )
             )

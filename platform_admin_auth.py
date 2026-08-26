@@ -743,6 +743,42 @@ def _testflight_webhook_test_message(
     return message
 
 
+def _managed_access_request_message(
+    from_address: str,
+    recipient: str,
+    requester_name: str,
+    requester_email: str,
+    requester_phone: str,
+    organization_name: str,
+    designator: str,
+    source_host: str,
+    terms_version: str,
+    terms_text: str,
+    submitted_at: str,
+) -> EmailMessage:
+    message = EmailMessage()
+    message["Subject"] = f"Managed pilot access request: {designator}"
+    message["From"] = from_address
+    message["To"] = recipient
+    message["Cc"] = requester_email
+    message["Reply-To"] = requester_email
+    message.set_content(
+        "Managed r2c-tracker pilot request\n\n"
+        f"Name: {requester_name}\n"
+        f"Email: {requester_email}\n"
+        f"Phone: {requester_phone or 'Not provided'}\n"
+        f"Organization: {organization_name}\n"
+        f"Organization designator: {designator}\n\n"
+        f"Exact acknowledgment accepted (version {terms_version}):\n\n"
+        f"{terms_text}\n\n"
+        f"Submitted: {submitted_at}\n"
+        f"Site: {source_host}\n\n"
+        "This message was sent to the RID2Caltopo project contact and copied to "
+        "the requester so both retain the same request and acknowledgment."
+    )
+    return message
+
+
 class GmailApiPlatformAdminEmailSender:
     def __init__(
         self,
@@ -864,6 +900,22 @@ class GmailApiPlatformAdminEmailSender:
             kwargs["administration_url"],
         )
         self._send(message, "Organization access-request email could not be sent.")
+
+    def send_managed_access_request(self, **kwargs) -> None:
+        message = _managed_access_request_message(
+            self.from_address,
+            kwargs["recipient"],
+            kwargs["requester_name"],
+            kwargs["requester_email"],
+            kwargs["requester_phone"],
+            kwargs["organization_name"],
+            kwargs["designator"],
+            kwargs["source_host"],
+            kwargs["terms_version"],
+            kwargs["terms_text"],
+            kwargs["submitted_at"],
+        )
+        self._send(message, "Managed access-request email could not be sent.")
 
     def send_organization_administrator_changed(self, **kwargs) -> None:
         message = _organization_administrator_changed_message(
@@ -1182,6 +1234,33 @@ class SmtpPlatformAdminEmailSender:
         except Exception as exc:
             raise PlatformAdminAuthError(
                 "Organization access-request email could not be sent."
+            ) from exc
+
+    def send_managed_access_request(self, **kwargs) -> None:
+        if not self.is_configured:
+            raise PlatformAdminAuthError("Administrator email is not configured.")
+        message = _managed_access_request_message(
+            self.from_address,
+            kwargs["recipient"],
+            kwargs["requester_name"],
+            kwargs["requester_email"],
+            kwargs["requester_phone"],
+            kwargs["organization_name"],
+            kwargs["designator"],
+            kwargs["source_host"],
+            kwargs["terms_version"],
+            kwargs["terms_text"],
+            kwargs["submitted_at"],
+        )
+        try:
+            with smtplib.SMTP(self.host, self.port, timeout=15) as smtp:
+                smtp.starttls(context=ssl.create_default_context())
+                if self.username:
+                    smtp.login(self.username, self.password)
+                smtp.send_message(message)
+        except Exception as exc:
+            raise PlatformAdminAuthError(
+                "Managed access-request email could not be sent."
             ) from exc
 
     def send_organization_administrator_changed(

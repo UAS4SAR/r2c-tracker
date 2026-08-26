@@ -11,6 +11,7 @@ from platform_admin_auth import (
     MicrosoftOidcClient,
     PlatformAdminAuthError,
     SmtpPlatformAdminEmailSender,
+    _managed_access_request_message,
     _organization_extended_beta_allowance_message,
     _testflight_feedback_message,
     _testflight_webhook_test_message,
@@ -18,6 +19,30 @@ from platform_admin_auth import (
 
 
 class PlatformAdminAuthHelpersTest(unittest.TestCase):
+    def test_managed_access_request_copies_requester_and_preserves_exact_terms(self):
+        terms_text = (
+            "I accept responsibility and waive California Civil Code section 1542."
+        )
+        message = _managed_access_request_message(
+            "kjtsar@kjt.us",
+            "kjtsar@kjt.us",
+            "Jamie Responder",
+            "jamie@example.org",
+            "+1 530 555 0100",
+            "Foothill Search and Rescue",
+            "FHSAR",
+            "rid2caltopo.org",
+            "2026-08-25",
+            terms_text,
+            "2026-08-25T19:30:00+00:00",
+        )
+
+        self.assertEqual("kjtsar@kjt.us", message["To"])
+        self.assertEqual("jamie@example.org", message["Cc"])
+        self.assertEqual("jamie@example.org", message["Reply-To"])
+        self.assertIn(terms_text, message.get_content())
+        self.assertIn("Exact acknowledgment accepted (version 2026-08-25)", message.get_content())
+
     def test_testflight_feedback_notice_links_to_app_store_connect(self):
         message = _testflight_feedback_message(
             "kjtsar@kjt.us",

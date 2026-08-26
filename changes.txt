@@ -1,3 +1,7 @@
+v1.4.81: pending review
+* Accept and retain the current managed-pilot acknowledgment so valid RID2Caltopo website requests no longer end on the request error page.
+* Email the platform contact and copy the requester with the same request details and exact accepted acknowledgment, including assumption of responsibility, developer hold-harmless terms, and the California Civil Code section 1542 waiver for counsel review.
+
 v1.4.80: deployed
 * Relay short-lived RID and SEI aircraft positions only to incident peers within one mile, preserving independent source and altitude freshness without changing ownership, map icons, or proximity alerts.
 * Normalize confirmed-owner altitude to MSL with a per-flight takeoff correction, and exchange the calibration and DEM provenance needed to compare aircraft using an equivalent vertical reference.

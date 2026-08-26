@@ -63,6 +63,7 @@ from control_plane import (
     DeviceCredentialRecord,
     DuplicateOrganizationError,
     InvalidOrganizationError,
+    MANAGED_ACCESS_TERMS_TEXT,
     ROLE_DESCRIPTIONS,
     managed_video_quality_choices,
     normalize_video_preflight_answer,
@@ -152,6 +153,10 @@ CONTROL_PLANE_SIGNING_KEY = os.environ.get(
 ).strip()
 MANAGED_REQUEST_INGEST_KEY = os.environ.get(
     "MANAGED_REQUEST_INGEST_KEY", ""
+).strip()
+MANAGED_REQUEST_NOTIFICATION_EMAIL = os.environ.get(
+    "MANAGED_REQUEST_NOTIFICATION_EMAIL",
+    os.environ.get("PLATFORM_EMAIL_FROM", "kjtsar@kjt.us"),
 ).strip()
 CONTROL_PLANE_PUBLIC_URL = os.environ.get(
     "CONTROL_PLANE_PUBLIC_URL", "https://r2c-tracker.com"
@@ -6147,6 +6152,7 @@ async def managed_access_request_ingest(
         designator: Annotated[str, Form()],
         source_host: Annotated[str, Form()],
         terms_version: Annotated[str, Form()],
+        terms_text: Annotated[str, Form()],
         terms_acknowledged: Annotated[str, Form()],
         requester_phone: Annotated[str, Form()] = ""):
     if not MANAGED_REQUEST_INGEST_KEY:
@@ -6157,6 +6163,16 @@ async def managed_access_request_ingest(
         raise HTTPException(status_code=403, detail="Request intake authorization failed.")
     if control_plane_store is None:
         raise HTTPException(status_code=503, detail="Request storage is not configured.")
+    if terms_text != MANAGED_ACCESS_TERMS_TEXT:
+        raise HTTPException(
+            status_code=422,
+            detail="Review and acknowledge the current managed-service terms.",
+        )
+    if (
+        not platform_admin_email_sender.is_configured
+        or not MANAGED_REQUEST_NOTIFICATION_EMAIL
+    ):
+        raise HTTPException(status_code=503, detail="Request email is not configured.")
     try:
         record = await control_plane_store.create_managed_access_request(
             requester_name=requester_name,
@@ -6171,6 +6187,26 @@ async def managed_access_request_ingest(
         )
     except (ControlPlaneError, InvalidOrganizationError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        await asyncio.to_thread(
+            platform_admin_email_sender.send_managed_access_request,
+            recipient=MANAGED_REQUEST_NOTIFICATION_EMAIL,
+            requester_name=record.requester_name,
+            requester_email=record.requester_email,
+            requester_phone=record.requester_phone,
+            organization_name=record.organization_name,
+            designator=record.designator,
+            source_host=record.source_host,
+            terms_version=record.terms_version,
+            terms_text=terms_text,
+            submitted_at=record.submitted_at.isoformat(),
+        )
+    except Exception as exc:
+        logging.exception("Managed access request email delivery failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Request email could not be sent.",
+        ) from exc
     return {"status": "received", "request_id": record.id}
 
 
