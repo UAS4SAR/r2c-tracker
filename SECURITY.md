@@ -8,7 +8,7 @@ The software is a supplemental, best-effort public-safety tool. It is not a cert
 
 ## Reporting a vulnerability
 
-Report suspected vulnerabilities privately to `kjtsar@kjt.us`. Do not include live credentials, unnecessary precise incident locations, flight records, or personal information in the initial message. If sensitive evidence is necessary, request a protected transfer method first.
+Report suspected vulnerabilities privately to `kjt@uas4sar.com`. Do not include live credentials, unnecessary precise incident locations, flight records, or personal information in the initial message. If sensitive evidence is necessary, request a protected transfer method first.
 
 Include:
 

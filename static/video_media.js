@@ -13,6 +13,8 @@
   const requestId = state.dataset.requestId || "";
   const designator = state.dataset.designator || "";
   const formToken = state.dataset.formToken || "";
+  const zeroPacketRetryKey = `r2c-video-zero-packet-retry:${designator}:${requestId}`;
+  const maxZeroPacketRetries = 1;
   let iceServers = [];
   try { iceServers = JSON.parse(state.dataset.iceServers || "[]"); } catch (_error) {}
 
@@ -123,6 +125,44 @@
       pageLeaving = true;
       window.location.reload();
     }, delayMs);
+  }
+
+  function storedZeroPacketRetryCount() {
+    try {
+      return Math.max(0, Number.parseInt(window.sessionStorage.getItem(
+        zeroPacketRetryKey
+      ) || "0", 10) || 0);
+    } catch (_error) {
+      return 0;
+    }
+  }
+
+  function clearZeroPacketRetryCount() {
+    try { window.sessionStorage.removeItem(zeroPacketRetryKey); } catch (_error) {}
+  }
+
+  function retryZeroPacketConnection(reason) {
+    if (pageLeaving || endedReported || videoBytesReceived > 0) return false;
+    const retryCount = storedZeroPacketRetryCount();
+    if (retryCount >= maxZeroPacketRetries) return false;
+    try {
+      window.sessionStorage.setItem(zeroPacketRetryKey, String(retryCount + 1));
+    } catch (_error) {
+      return false;
+    }
+    reportDiagnostic(
+      "media_zero_packet_retry",
+      `attempt=${retryCount + 1} reason=${reason || "zero packets"}`,
+    );
+    show("No video packets arrived; retrying the media connection…", "connecting");
+    pageLeaving = true;
+    window.clearInterval(statsTimer);
+    statsTimer = null;
+    window.clearInterval(serverStateTimer);
+    serverStateTimer = null;
+    peer.close();
+    window.setTimeout(function () { window.location.reload(); }, 500);
+    return true;
   }
 
   function waitForRelayCandidate(timeoutMs) {
@@ -320,6 +360,7 @@
     const now = Date.now();
     if (!firstFrameShown && decodedFrames > 0) {
       firstFrameShown = true;
+      clearZeroPacketRetryCount();
       show("Video is playing.", "playing");
       reportDiagnostic("video_first_frame", `${video.videoWidth}x${video.videoHeight}`);
     }
@@ -341,7 +382,9 @@
       await reportEnded("Video source stopped; the frozen last frame was cleared.");
     } else if (!lastPacketProgressAt && trackAttachedAt &&
                now - trackAttachedAt >= 15000) {
-      await reportEnded("No video packets arrived; the media connection was closed.");
+      if (!retryZeroPacketConnection("track attached without RTP")) {
+        await reportEnded("No video packets arrived; the media connection was closed.");
+      }
     }
     renderAudioCounters(microphoneEnabled ? "Microphone live" : "Microphone off");
   }
@@ -429,7 +472,9 @@
     reportDiagnostic("peer_connection_state", peer.connectionState || "");
     if (!pageLeaving && !endedReported &&
         (peer.connectionState === "failed" || peer.connectionState === "closed")) {
-      reportEnded(`Video connection ${peer.connectionState}; the last frame was cleared.`).catch(function () {});
+      if (!retryZeroPacketConnection(`peer ${peer.connectionState}`)) {
+        reportEnded(`Video connection ${peer.connectionState}; the last frame was cleared.`).catch(function () {});
+      }
     }
   });
 

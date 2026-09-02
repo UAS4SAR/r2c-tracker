@@ -640,8 +640,8 @@ class ControlPlaneStoreTest(unittest.TestCase):
         self.assertEqual("organization.unarchived", audit_events[0].event_type)
 
     def test_managed_access_requests_are_deduplicated_and_retain_phone(self):
-        self.assertEqual("2026-08-25", MANAGED_ACCESS_TERMS_VERSION)
-        self.assertIn("hold harmless Ken Taylor", MANAGED_ACCESS_TERMS_TEXT)
+        self.assertEqual("2026-08-31", MANAGED_ACCESS_TERMS_VERSION)
+        self.assertIn("hold harmless UAS4SAR LLC", MANAGED_ACCESS_TERMS_TEXT)
         self.assertIn("California Civil Code section 1542", MANAGED_ACCESS_TERMS_TEXT)
         self.assertIn("unknown or unsuspected", MANAGED_ACCESS_TERMS_TEXT)
         values = {
@@ -1474,7 +1474,7 @@ class ControlPlaneStoreTest(unittest.TestCase):
         campaigns = {
             campaign.id: campaign
             for campaign in asyncio.run(
-                self.store.list_enrollment_campaigns(organization.id)
+                self.store.list_enrollment_campaigns(organization.id, now=self.now)
             )
         }
         self.assertEqual("superseded", campaigns[first.id].state)
@@ -1498,7 +1498,10 @@ class ControlPlaneStoreTest(unittest.TestCase):
         campaigns = {
             campaign.id: campaign
             for campaign in asyncio.run(
-                self.store.list_enrollment_campaigns(organization.id)
+                self.store.list_enrollment_campaigns(
+                    organization.id,
+                    now=self.now + timedelta(minutes=3),
+                )
             )
         }
         self.assertEqual("active", renewed.state)
@@ -1548,7 +1551,7 @@ class ControlPlaneStoreTest(unittest.TestCase):
         campaigns = {
             campaign.id: campaign
             for campaign in asyncio.run(
-                self.store.list_enrollment_campaigns(organization.id)
+                self.store.list_enrollment_campaigns(organization.id, now=self.now)
             )
         }
         self.assertEqual("superseded", campaigns[first.id].state)

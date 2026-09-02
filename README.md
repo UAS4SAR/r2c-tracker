@@ -119,6 +119,9 @@ platform route families.
   keeping FAA credentials off mobile devices.
 - Create signed, expiring, revocable organization enrollment campaigns and
   per-device app credentials.
+- Pull, review, publish, and restore encrypted organization CalTopo settings,
+  including the Connect Key used for Shared Locations position reports, without
+  storing that key as a separate tracker account field.
 - Support password and verified Google organization login, single-use password
   reset, and separately authenticated platform administration.
 - Advertise organization streams and coordinate request, consent, preflight,

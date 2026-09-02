@@ -93,7 +93,7 @@ ONBOARDING_STEPS = (
     "run tenant health checks",
     "prepare administrator activation",
 )
-MANAGED_ACCESS_TERMS_VERSION = "2026-08-25"
+MANAGED_ACCESS_TERMS_VERSION = "2026-08-31"
 MANAGED_ACCESS_TERMS_TEXT = (
     "I represent and warrant that I am authorized to request access to and use "
     "RID2Caltopo and r2c-tracker on behalf of the organization I represent, and to "
@@ -111,8 +111,8 @@ MANAGED_ACCESS_TERMS_TEXT = (
     "incident-command decisions. The organization remains responsible for "
     "independently verifying safety-critical information.\n\n"
     "To the fullest extent permitted by law, the organization and I release, waive, "
-    "discharge, indemnify, defend, and hold harmless Ken Taylor, as the developer and "
-    "maintainer of the RID2Caltopo app and r2c-tracker website, and the project's "
+    "discharge, indemnify, defend, and hold harmless UAS4SAR LLC, as the publisher and "
+    "operator of the RID2Caltopo app and r2c-tracker website, and the project's "
     "contributors, from and against any and all claims, demands, actions, "
     "liabilities, losses, damages, judgments, costs, and expenses, including "
     "reasonable attorneys' fees, arising out of or relating to access to, use of, "
@@ -5823,8 +5823,9 @@ class ControlPlaneStore:
     async def list_enrollment_campaigns(
         self,
         organization_id: str,
+        now: Optional[datetime] = None,
     ) -> tuple[EnrollmentCampaignRecord, ...]:
-        checked_at = utc_now()
+        checked_at = as_utc(now or utc_now())
         async with self.sessions() as session:
             campaigns = (
                 await session.scalars(

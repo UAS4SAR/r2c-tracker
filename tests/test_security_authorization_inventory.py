@@ -94,6 +94,10 @@ class SecurityAuthorizationInventoryTest(unittest.TestCase):
         websocket_source = inspect.getsource(main.serve_r2c_websocket)
         self.assertIn("authenticate_tracker_session", websocket_source)
         self.assertIn("organization_mismatch", websocket_source)
+        self.assertIn("asyncio.wait_for", websocket_source)
+        self.assertIn("R2C_CLIENT_SILENCE_SEC", websocket_source)
+        self.assertIn('"reason": "standalone_standby"', websocket_source)
+        self.assertIn('reason="tablet-silence-timeout"', websocket_source)
 
         source = inspect.getsource(main.organization_public_dashboard)
         self.assertIn('records_visibility != "public"', source)

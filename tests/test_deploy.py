@@ -183,7 +183,7 @@ class DeployScriptTest(unittest.TestCase):
             script,
         )
         self.assertIn(
-            'TESTFLIGHT_FEEDBACK_EMAIL="${TESTFLIGHT_FEEDBACK_EMAIL:-kjtsar@kjt.us}"',
+            'TESTFLIGHT_FEEDBACK_EMAIL="${TESTFLIGHT_FEEDBACK_EMAIL:-kjt@uas4sar.com}"',
             script,
         )
         self.assertIn("stun:stun.cloudflare.com:3478", script)

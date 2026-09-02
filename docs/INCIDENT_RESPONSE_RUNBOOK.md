@@ -1,7 +1,7 @@
 # r2c-tracker Incident Response Runbook
 
 Status: interim pilot procedure, pending program-operator approval
-Security contact: `kjtsar@kjt.us` (replace with a program-operator-controlled address)
+Security contact: `kjt@uas4sar.com` (replace with a program-operator-controlled address)
 
 This runbook governs suspected compromise, cross-organization access, material service abuse, or loss of trustworthy operational state. Response is best effort; these targets are not a service-level agreement.
 

@@ -161,7 +161,7 @@ class AppStoreConnectWebhookRouteTest(unittest.TestCase):
     def configured(self, store, sender):
         return (
             patch.object(main, "APP_STORE_CONNECT_WEBHOOK_SECRET", SECRET),
-            patch.object(main, "TESTFLIGHT_FEEDBACK_EMAIL", "kjtsar@kjt.us"),
+            patch.object(main, "TESTFLIGHT_FEEDBACK_EMAIL", "kjt@uas4sar.com"),
             patch.object(main, "control_plane_store", store),
             patch.object(main, "platform_admin_email_sender", sender),
         )
@@ -176,7 +176,7 @@ class AppStoreConnectWebhookRouteTest(unittest.TestCase):
 
         self.assertEqual(204, response.status_code)
         self.assertEqual(1, len(sender.messages))
-        self.assertEqual("kjtsar@kjt.us", sender.messages[0]["recipient"])
+        self.assertEqual("kjt@uas4sar.com", sender.messages[0]["recipient"])
         self.assertEqual("crash", sender.messages[0]["feedback_kind"])
         self.assertEqual(1, len(store.sent))
         self.assertEqual([], store.failed)
@@ -225,7 +225,7 @@ class AppStoreConnectWebhookRouteTest(unittest.TestCase):
         self.assertEqual([], store.claimed)
         self.assertEqual([], sender.messages)
         self.assertEqual(1, len(sender.test_messages))
-        self.assertEqual("kjtsar@kjt.us", sender.test_messages[0]["recipient"])
+        self.assertEqual("kjt@uas4sar.com", sender.test_messages[0]["recipient"])
 
     def test_ping_email_failure_asks_apple_to_report_failure(self):
         store = FakeWebhookStore()

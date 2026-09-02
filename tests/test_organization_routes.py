@@ -276,6 +276,8 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertNotIn('state.dataset.active !== "true"', script)
         self.assertIn('message.type === "ready"', script)
         self.assertIn("status.membershipRevision !== renderedMembershipRevision", script)
+        self.assertIn('const sessionFilter = state.dataset.sessionFilter', script)
+        self.assertIn('query.set("session", sessionFilter)', script)
         self.assertEqual(1, script.count("window.location.reload()"))
         self.assertIn("new Image()", script)
         self.assertIn("image.dataset.thumbnailRevision", script)
@@ -361,6 +363,18 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         timer_start = script.index("statsTimer = window.setInterval", track_handler)
         self.assertLess(timer_start, playing_handler)
         self.assertIn("now - trackAttachedAt >= 15000", script)
+
+    def test_video_zero_packet_failure_retries_once_without_stopping_request(self):
+        script = Path("static/video_media.js").read_text()
+
+        self.assertIn("const maxZeroPacketRetries = 1", script)
+        self.assertIn('"media_zero_packet_retry"', script)
+        self.assertIn('retryZeroPacketConnection("track attached without RTP")', script)
+        self.assertIn("window.location.reload()", script)
+        self.assertIn("clearZeroPacketRetryCount();", script)
+        retry_start = script.index("function retryZeroPacketConnection")
+        retry_end = script.index("function waitForRelayCandidate", retry_start)
+        self.assertNotIn("/ended", script[retry_start:retry_end])
 
     def test_recording_spool_reaper_removes_only_expired_transfer_files(self):
         spool_root = Path(self.temp_dir.name) / "organizations" / "ncssar" / "recordings" / "session"
@@ -448,7 +462,7 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             'reportDiagnostic("video_play_rejected"',
         ):
             self.assertIn(diagnostic, script)
-        self.assertIn("video_media.js?v=20260814-2", template)
+        self.assertIn("video_media.js?v=20260829-1", template)
 
     def test_media_offer_posts_on_first_relay_candidate(self):
         script = Path("static/video_media.js").read_text()
@@ -1055,6 +1069,10 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertIn('href="/ncssar/admin/members"', admin_page.text)
         self.assertIn('href="/ncssar/admin/enrollments"', admin_page.text)
         self.assertIn('href="/ncssar/admin/audit"', admin_page.text)
+        self.assertIn(
+            'href="/versions" style="color: #7f8c8d; text-decoration: none; font-size: 0.8em;">Tracker Version',
+            admin_page.text,
+        )
         self.assertNotIn("Members &amp; delegated roles", admin_page.text)
         self.assertNotIn('id="device-authorizations"', admin_page.text)
         self.assertIn("Drone-team enrollment QR", admin_page.text)
@@ -2447,7 +2465,7 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             patch.object(
                 main,
                 "MANAGED_REQUEST_NOTIFICATION_EMAIL",
-                "kjtsar@kjt.us",
+                "kjt@uas4sar.com",
             ),
         ):
             denied = self.client.post(
@@ -2939,6 +2957,25 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             self.assertEqual(200, recording_page.status_code)
             self.assertIn("<td>2B</td>", recording_page.text)
             self.assertNotIn("<td>10A</td>", recording_page.text)
+            self.assertIn(
+                'data-session-filter="00000000-0000-0000-0000-000000000002"',
+                recording_page.text,
+            )
+            session_status_response = self.client.get(
+                "/ncssar/streams/live-status",
+                params={
+                    "device": device.id,
+                    "session": "00000000-0000-0000-0000-000000000002",
+                },
+            )
+            self.assertEqual(200, session_status_response.status_code)
+            self.assertEqual(
+                ["00000000-0000-0000-0000-000000000002"],
+                [
+                    item["sessionId"]
+                    for item in session_status_response.json()["streams"]
+                ],
+            )
             self.assertRegex(recording_page.text, r">\s*Download\s*</button>")
             recording_row = re.search(
                 r'<tr data-stream-session-id="00000000-0000-0000-0000-000000000002">(.*?)</tr>',

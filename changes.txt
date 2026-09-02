@@ -1,3 +1,10 @@
+v1.4.82:
+* Retry a remote Live Feed connection once when it establishes without delivering video, preserving the approved viewing request during recovery and returning to normal failure handling if the retry also fails.
+* Retire an R2C tablet connection into Tracker standby after 60 seconds without any tablet message, clearing stale incident-map presence when field connectivity disappears without a clean disconnect.
+* Keep a completed recording's exact Streams page stable instead of repeatedly reloading it when the connected tablet advertises other recordings.
+* Restore the Tracker Version link on organization pages so operators can open the deployed change history without using Git.
+* Identify UAS4SAR LLC as the RID2Caltopo and r2c-tracker publisher and operator in managed-access terms, and use the UAS4SAR mailbox for platform, TestFlight-feedback, and security notices.
+
 v1.4.81: deployed
 * Accept and retain the current managed-pilot acknowledgment so valid RID2Caltopo website requests no longer end on the request error page.
 * Email the platform contact and copy the requester with the same request details and exact accepted acknowledgment, including assumption of responsibility, developer hold-harmless terms, and the California Civil Code section 1542 waiver for counsel review.

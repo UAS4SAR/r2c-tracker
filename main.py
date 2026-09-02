@@ -156,7 +156,7 @@ MANAGED_REQUEST_INGEST_KEY = os.environ.get(
 ).strip()
 MANAGED_REQUEST_NOTIFICATION_EMAIL = os.environ.get(
     "MANAGED_REQUEST_NOTIFICATION_EMAIL",
-    os.environ.get("PLATFORM_EMAIL_FROM", "kjtsar@kjt.us"),
+    os.environ.get("PLATFORM_EMAIL_FROM", "kjt@uas4sar.com"),
 ).strip()
 CONTROL_PLANE_PUBLIC_URL = os.environ.get(
     "CONTROL_PLANE_PUBLIC_URL", "https://r2c-tracker.com"
@@ -369,7 +369,7 @@ APP_STORE_CONNECT_WEBHOOK_SECRET = os.environ.get(
     "APP_STORE_CONNECT_WEBHOOK_SECRET", ""
 ).strip()
 TESTFLIGHT_FEEDBACK_EMAIL = os.environ.get(
-    "TESTFLIGHT_FEEDBACK_EMAIL", "kjtsar@kjt.us"
+    "TESTFLIGHT_FEEDBACK_EMAIL", "kjt@uas4sar.com"
 ).strip()
 TESTFLIGHT_APP_NAME = os.environ.get(
     "TESTFLIGHT_APP_NAME", "RID2Caltopo"
@@ -611,6 +611,10 @@ FLIGHTLOGS_STORAGE_REQUIRED = os.environ.get(
 faa_notam_proxy = FaaNotamProxy()
 R2C_HEARTBEAT_SEC = int(os.environ.get("R2C_HEARTBEAT_SEC", "15"))
 R2C_LEASE_SEC = int(os.environ.get("R2C_LEASE_SEC", "45"))
+R2C_CLIENT_SILENCE_SEC = max(
+    R2C_HEARTBEAT_SEC * 2,
+    int(os.environ.get("R2C_CLIENT_SILENCE_SEC", "60")),
+)
 R2C_DB_CLEANUP_SEC = int(os.environ.get("R2C_DB_CLEANUP_SEC", "86400"))
 R2C_HEARTBEAT_ZONE_UPDATE_SEC = int(os.environ.get("R2C_HEARTBEAT_ZONE_UPDATE_SEC", "60"))
 R2C_IDLE_PARK_SEC = int(os.environ.get("R2C_IDLE_PARK_SEC", "30"))
@@ -9927,6 +9931,7 @@ async def organization_streams(
             "tablet_device": tablet_device,
             "connected_tablets": connected_tablets,
             "tablet_code": clean_tablet_code,
+            "session_filter": clean_session,
             "tablet_device_id": (
                 tablet_device.id if tablet_device is not None else ""
             ),
@@ -12261,7 +12266,8 @@ async def organization_stream_live_status(
         request: Request,
         designator: str,
         device: str = "",
-        stream: str = ""):
+        stream: str = "",
+        session: str = ""):
     """Return the small, authenticated model used for in-place previews."""
     organization, _user = await require_organization_user(
         request,
@@ -12276,6 +12282,7 @@ async def organization_stream_live_status(
     )
     clean_device_id = device.strip()
     clean_stream = stream.strip().lower()
+    clean_session = session.strip()
     if clean_device_id:
         streams = tuple(
             item for item in streams
@@ -12289,6 +12296,11 @@ async def organization_stream_live_status(
         streams = tuple(
             item for item in streams
             if item.drone_designator.strip().lower() == clean_stream
+        )
+    if clean_session:
+        streams = tuple(
+            item for item in streams
+            if item.session_id == clean_session and item.media_kind == "recording"
         )
     values = []
     for item in streams:
@@ -12341,7 +12353,8 @@ async def organization_stream_events(
         websocket: WebSocket,
         designator: str,
         device: str = "",
-        stream: str = ""):
+        stream: str = "",
+        session: str = ""):
     """Notify an authenticated viewer only when stream lifecycle state changes."""
     if not organization_site_ready():
         await websocket.close(code=1013, reason="Organization site unavailable")
@@ -12363,6 +12376,7 @@ async def organization_stream_events(
 
     clean_device_id = device.strip()
     clean_stream = stream.strip().lower()
+    clean_session = session.strip()
 
     async def renew_thumbnail_preview() -> None:
         active_streams = await control_plane_store.list_active_video_streams(
@@ -12400,6 +12414,12 @@ async def organization_stream_events(
             streams = tuple(
                 item for item in streams
                 if item.drone_designator.strip().lower() == clean_stream
+            )
+        if clean_session:
+            streams = tuple(
+                item for item in streams
+                if item.session_id == clean_session
+                and item.media_kind == "recording"
             )
         return organization_stream_status(streams, requests)
 
@@ -12529,7 +12549,48 @@ async def serve_r2c_websocket(
     )
     try:
         while True:
-            payload = json.loads(await websocket.receive_text())
+            try:
+                client_message = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=R2C_CLIENT_SILENCE_SEC,
+                )
+            except asyncio.TimeoutError:
+                conn_info = await r2c_hub.get_connection_debug_info(websocket)
+                logger.warning(
+                    "r2c websocket tablet silence timeout: client=%s timeout_sec=%s "
+                    "map=%s zone=%s guid=%s conn_age_ms=%s hello_age_ms=%s "
+                    "last_seen_age_ms=%s",
+                    client_host,
+                    R2C_CLIENT_SILENCE_SEC,
+                    conn_info.get("map_id", ""),
+                    conn_info.get("zone_id", ""),
+                    conn_info.get("guid", ""),
+                    conn_info.get("conn_age_ms", ""),
+                    conn_info.get("hello_age_ms", ""),
+                    conn_info.get("last_seen_age_ms", ""),
+                )
+                # The cloud deliberately retires a silent tablet from
+                # coordination; retain that healthy operator-facing state
+                # instead of presenting this as a server failure.
+                try:
+                    await r2c_hub.handle_message(
+                        websocket,
+                        {"type": "idle", "reason": "standalone_standby"},
+                    )
+                except Exception:
+                    logger.exception(
+                        "r2c failed to persist tablet silence standby: client=%s",
+                        client_host,
+                    )
+                try:
+                    await websocket.close(
+                        code=4000,
+                        reason="tablet-silence-timeout",
+                    )
+                finally:
+                    await r2c_hub.disconnect(websocket)
+                return
+            payload = json.loads(client_message)
             if isinstance(payload, dict):
                 if payload.get("type") == "hello":
                     functionality_release = R2CCoordinationHub._parse_nonnegative_int(

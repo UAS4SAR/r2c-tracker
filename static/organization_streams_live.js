@@ -7,6 +7,7 @@
   const designator = state.dataset.designator || "";
   const deviceId = state.dataset.deviceId || "";
   const streamFilter = state.dataset.streamFilter || "";
+  const sessionFilter = state.dataset.sessionFilter || "";
   // Preflight and media controllers own their request lifecycle. Reloading an
   // active controller because the tablet's advertised stream set changes can
   // destroy an otherwise healthy WebRTC session (for example, during a brief
@@ -28,6 +29,7 @@
   const query = new URLSearchParams();
   if (deviceId) query.set("device", deviceId);
   if (streamFilter) query.set("stream", streamFilter);
+  if (sessionFilter) query.set("session", sessionFilter);
   const suffix = query.toString() ? `?${query.toString()}` : "";
   const eventUrl = `${protocol}//${window.location.host}/${encodeURIComponent(designator)}/streams/events${suffix}`;
   const statusUrl = `${state.dataset.statusUrl || ""}${suffix}`;

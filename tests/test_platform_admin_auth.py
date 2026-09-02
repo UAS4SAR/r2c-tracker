@@ -24,8 +24,8 @@ class PlatformAdminAuthHelpersTest(unittest.TestCase):
             "I accept responsibility and waive California Civil Code section 1542."
         )
         message = _managed_access_request_message(
-            "kjtsar@kjt.us",
-            "kjtsar@kjt.us",
+            "kjt@uas4sar.com",
+            "kjt@uas4sar.com",
             "Jamie Responder",
             "jamie@example.org",
             "+1 530 555 0100",
@@ -37,7 +37,7 @@ class PlatformAdminAuthHelpersTest(unittest.TestCase):
             "2026-08-25T19:30:00+00:00",
         )
 
-        self.assertEqual("kjtsar@kjt.us", message["To"])
+        self.assertEqual("kjt@uas4sar.com", message["To"])
         self.assertEqual("jamie@example.org", message["Cc"])
         self.assertEqual("jamie@example.org", message["Reply-To"])
         self.assertIn(terms_text, message.get_content())
@@ -45,8 +45,8 @@ class PlatformAdminAuthHelpersTest(unittest.TestCase):
 
     def test_testflight_feedback_notice_links_to_app_store_connect(self):
         message = _testflight_feedback_message(
-            "kjtsar@kjt.us",
-            "kjtsar@kjt.us",
+            "kjt@uas4sar.com",
+            "kjt@uas4sar.com",
             "RID2Caltopo",
             "crash",
             "feedback-123",
@@ -55,14 +55,14 @@ class PlatformAdminAuthHelpersTest(unittest.TestCase):
         )
 
         self.assertEqual("[R2C] New TestFlight crash feedback", message["Subject"])
-        self.assertEqual("kjtsar@kjt.us", message["To"])
+        self.assertEqual("kjt@uas4sar.com", message["To"])
         self.assertIn("feedback-123", message.get_content())
         self.assertIn("appstoreconnect.apple.com", message.get_content())
 
     def test_testflight_webhook_test_confirms_email_delivery(self):
         message = _testflight_webhook_test_message(
-            "kjtsar@kjt.us",
-            "kjtsar@kjt.us",
+            "kjt@uas4sar.com",
+            "kjt@uas4sar.com",
             "RID2Caltopo",
         )
 
@@ -251,7 +251,7 @@ class PlatformAdminAuthHelpersTest(unittest.TestCase):
             client_id="client-id",
             client_secret="client-secret",
             refresh_token="refresh-token",
-            from_address="kjtsar@kjt.us",
+            from_address="kjt@uas4sar.com",
         )
 
         sender.send_organization_password_reset(
