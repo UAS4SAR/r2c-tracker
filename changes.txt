@@ -1,4 +1,4 @@
-v1.4.82:
+v1.4.82: deployed
 * Retry a remote Live Feed connection once when it establishes without delivering video, preserving the approved viewing request during recovery and returning to normal failure handling if the retry also fails.
 * Retire an R2C tablet connection into Tracker standby after 60 seconds without any tablet message, clearing stale incident-map presence when field connectivity disappears without a clean disconnect.
 * Keep a completed recording's exact Streams page stable instead of repeatedly reloading it when the connected tablet advertises other recordings.
