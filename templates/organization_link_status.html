@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}{% if unresolved %}Video link unavailable{% elif link_kind == "tablet" %}{{ tablet.device_name }} unavailable{% else %}Recording unavailable{% endif %}{% endblock %}
+{% block extra_head %}
+<style>
+  .link-status-shell {
+      max-width: 680px;
+      margin: 48px auto;
+  }
+  .link-status-card {
+      padding: 28px;
+      border: 1px solid #d1dbe4;
+      border-radius: 14px;
+      background: white;
+      box-shadow: 0 8px 24px rgba(24, 49, 83, 0.08);
+  }
+  .link-status-card h1 {
+      margin: 0 0 10px;
+      color: #183153;
+  }
+  .link-status-card p {
+      color: #51606f;
+      line-height: 1.55;
+  }
+  .status-chip {
+      display: inline-block;
+      margin-bottom: 18px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: #fff2c7;
+      color: #664d00;
+      font-size: 0.88rem;
+      font-weight: 750;
+  }
+  .recording-details {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 9px 18px;
+      margin: 22px 0;
+      padding: 18px;
+      border-radius: 10px;
+      background: #f5f8fb;
+  }
+  .recording-details dt { font-weight: 750; color: #34495e; }
+  .recording-details dd { margin: 0; color: #51606f; }
+  .link-actions { margin-top: 24px; }
+  .link-actions a {
+      display: inline-block;
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: #0b63c9;
+      color: white;
+      font-weight: 750;
+      text-decoration: none;
+  }
+  @media (max-width: 560px) {
+      .recording-details { grid-template-columns: 1fr; gap: 4px; }
+      .recording-details dd { margin-bottom: 8px; }
+  }
+</style>
+{% endblock %}
+{% block content %}
+<section class="link-status-shell">
+  <div class="link-status-card">
+    {% if unresolved %}
+    <span class="status-chip">Unavailable</span>
+    <h1>Video link unavailable</h1>
+    <p>
+      This link does not identify an available R2C tablet or recording. It may
+      be incomplete or may refer to an older item that is no longer retained.
+    </p>
+    {% elif link_kind == "tablet" %}
+    <span class="status-chip">Not connected</span>
+    <h1>{{ tablet.device_name }} is not connected</h1>
+    <p>
+      Streams and recordings associated with this R2C tablet remain on the
+      pilot's or visual observer's device and are currently unavailable.
+      They will become available again when {{ tablet.device_name }} connects
+      to R2C Tracker.
+    </p>
+    {% else %}
+    <span class="status-chip">Unavailable</span>
+    <h1>Recording unavailable</h1>
+    <p>
+      This recording is stored on <strong>{{ tablet.device_name }}</strong>.
+      {% if connected %}
+      The tablet is connected, but it is not currently offering this recording.
+      {% else %}
+      {{ tablet.device_name }} is not connected to R2C Tracker.
+      {% endif %}
+    </p>
+    <dl class="recording-details">
+      <dt>R2C tablet</dt><dd>{{ tablet.device_name }}</dd>
+      <dt>Incident</dt><dd>{{ recording.incident_name }}</dd>
+      <dt>Aircraft</dt><dd>{{ recording.drone_designator }}</dd>
+      {% if recording.recorded_at %}
+      <dt>Recorded</dt>
+      <dd><time class="local-datetime" data-utc="{{ recording.recorded_at.isoformat() }}">{{ recording.recorded_at.isoformat() }}</time></dd>
+      {% endif %}
+      {% if recording.duration_ms %}
+      <dt>Duration</dt><dd>{{ "%.0f"|format(recording.duration_ms / 1000) }} seconds</dd>
+      {% endif %}
+    </dl>
+    <p>
+      The video itself has not been copied into this organization website. It
+      will become available when that tablet reconnects and offers the recording.
+    </p>
+    {% endif %}
+    {% if organization %}
+    <p class="link-actions">
+      <a href="/{{ organization.designator|lower }}/streams">View connected tablets and streams</a>
+    </p>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

@@ -2824,6 +2824,74 @@ class OrganizationRouteFlowTest(unittest.TestCase):
                 acknowledgement["type"],
             )
             self.assertTrue(acknowledgement["accepted"])
+        anonymous_tablet_code = tablet_link_code(
+            "ncssar", "Android video tablet"
+        )
+        anonymous_recording_code = recording_link_code(
+            "ncssar",
+            "Android video tablet",
+            "00000000-0000-0000-0000-000000000002",
+        )
+        for path in (
+            f"/t/{anonymous_tablet_code}",
+            f"/v/{anonymous_recording_code}",
+        ):
+            anonymous_link = self.client.get(path, follow_redirects=False)
+            self.assertEqual(303, anonymous_link.status_code)
+            self.assertTrue(
+                anonymous_link.headers["location"].startswith(
+                    "/ncssar/login?next="
+                )
+            )
+            self.assertNotIn("Android video tablet", anonymous_link.text)
+            self.assertEqual("no-store", anonymous_link.headers["cache-control"])
+            self.assertEqual(
+                "noindex, nofollow",
+                anonymous_link.headers["x-robots-tag"],
+            )
+        records_viewer = asyncio.run(
+            self.store.add_user(
+                organization_id=organization.id,
+                display_name="Records Viewer",
+                email="records@ncssar.example",
+                roles=("records_viewer",),
+                actor_id=owner.id,
+            )
+        )
+        viewer_invitation = asyncio.run(
+            self.store.get_invitation(
+                organization.designator,
+                records_viewer.email,
+            )
+        )
+        viewer_activation_url = self.tokens.activation_url(viewer_invitation)
+        viewer_activation_path = (
+            urlparse(viewer_activation_url).path
+            + "?"
+            + urlparse(viewer_activation_url).query
+        )
+        viewer_activation_page = self.client.get(viewer_activation_path)
+        viewer_password = "records viewer password"  # pragma: allowlist secret
+        viewer_activation = self.client.post(
+            "/ncssar/activate",
+            data={
+                "form_token": self.form_token(viewer_activation_page),
+                "token": parse_qs(
+                    urlparse(viewer_activation_url).query
+                )["token"][0],
+                "password": viewer_password,
+                "password_confirm": viewer_password,
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(303, viewer_activation.status_code)
+        for path in (
+            f"/t/{anonymous_tablet_code}",
+            f"/v/{anonymous_recording_code}",
+        ):
+            forbidden_link = self.client.get(path, follow_redirects=False)
+            self.assertEqual(403, forbidden_link.status_code)
+            self.assertNotIn("Android video tablet", forbidden_link.text)
         login_page = self.client.get("/ncssar/login")
         login = self.client.post(
             "/ncssar/login",
@@ -3174,11 +3242,38 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             f"/t/{tablet_code}",
             follow_redirects=False,
         )
-        self.assertEqual(404, unavailable_link.status_code)
+        self.assertEqual(200, unavailable_link.status_code)
+        self.assertIn(
+            "Android video tablet is not connected",
+            unavailable_link.text,
+        )
+        self.assertIn("pilot's or visual observer's device", unavailable_link.text)
+        self.assertEqual("no-store", unavailable_link.headers["cache-control"])
+        self.assertEqual("no-referrer", unavailable_link.headers["referrer-policy"])
+        unavailable_recording = self.client.get(
+            f"/v/{recording_code}",
+            follow_redirects=False,
+        )
+        self.assertEqual(200, unavailable_recording.status_code)
+        self.assertIn("Recording unavailable", unavailable_recording.text)
+        self.assertIn(
+            "stored on <strong>Android video tablet</strong>",
+            unavailable_recording.text,
+        )
+        self.assertIn("Alpha", unavailable_recording.text)
+        self.assertIn("2B", unavailable_recording.text)
+        self.assertIn("91 seconds", unavailable_recording.text)
+        self.assertIn("has not been copied", unavailable_recording.text)
+        self.assertEqual("no-store", unavailable_recording.headers["cache-control"])
         self.assertEqual(
             404,
             self.client.get(f"/s/{stream_code}", follow_redirects=False).status_code,
         )
+        unknown_link = self.client.get("/t/AAAAAA", follow_redirects=False)
+        self.assertEqual(404, unknown_link.status_code)
+        self.assertIn("Video link unavailable", unknown_link.text)
+        self.assertNotIn("Android video tablet", unknown_link.text)
+        self.assertEqual("no-store", unknown_link.headers["cache-control"])
         with self.client.websocket_connect(
             "/ncssar/ws/r2c",
             headers={"X-SAR-Token": device.token},

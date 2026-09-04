@@ -30,6 +30,8 @@ from control_plane import (
     normalize_designator,
     normalize_session_description,
     normalize_video_preflight_answer,
+    operational_member_name,
+    possessive_name,
     require_separate_database,
     verify_password,
 )
@@ -81,6 +83,66 @@ class ControlPlaneStoreTest(unittest.TestCase):
         self.assertTrue(all(step["state"] == "simulated" for step in jobs[0].steps))
         audit_events = asyncio.run(self.store.list_audit_events())
         self.assertEqual("organization.created", audit_events[0].event_type)
+
+    def test_operational_member_name_uses_only_needed_disambiguation(self):
+        self.assertEqual(
+            "Mike",
+            operational_member_name("Mike Davis", ("Mike Davis", "Jennifer Hall")),
+        )
+        self.assertEqual(
+            "Mike D.",
+            operational_member_name("Mike Davis", ("Mike Davis", "Mike Evans")),
+        )
+        self.assertEqual(
+            "Mike Davis",
+            operational_member_name("Mike Davis", ("Mike Davis", "Mike Dole")),
+        )
+        self.assertEqual("James'", possessive_name("James"))
+
+    def test_authenticated_devices_receive_unique_owner_model_names(self):
+        organization = self.create_organization()
+        invitation = asyncio.run(self.store.get_invitation(
+            organization.designator,
+            organization.primary_admin_email,
+        ))
+        owner = asyncio.run(self.store.activate_owner(
+            organization.designator,
+            organization.primary_admin_email,
+            "correct horse battery staple",
+            self.now,
+            activation_nonce=invitation.activation_nonce,
+        ))
+        campaign = asyncio.run(self.store.create_enrollment_campaign(
+            organization_id=organization.id,
+            label="Team tablets",
+            created_by_user_id=owner.id,
+            expires_in_hours=24,
+            max_redemptions=2,
+            now=self.now,
+        ))
+        first = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="iPad",
+            device_model="iPad Pro",
+            platform="ios",
+            installation_id="11111111-2222-3333-4444-555555555555",
+            authorized_user_id=owner.id,
+            now=self.now,
+        ))
+        second = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="iPad",
+            device_model="iPad Pro",
+            platform="ios",
+            installation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            authorized_user_id=owner.id,
+            now=self.now,
+        ))
+
+        self.assertEqual("Primary's iPad Pro", first.device_name)
+        self.assertEqual("Primary's iPad Pro-2", second.device_name)
 
     def test_external_webhook_delivery_claims_retry_and_deduplicates(self):
         values = {

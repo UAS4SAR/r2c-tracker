@@ -61,6 +61,7 @@ def load_coordination_classes():
         "R2C_RECOMMENDED_IOS_APP_BUILD_NUMBER": 12,
         "R2C_IOS_UPDATE_URL": "https://example.org/r2c-ios",
         "R2C_SWEEP_SEC": 15,
+        "control_plane_store": None,
     }
     exec(snippet, namespace)
     return namespace["R2CZoneConnection"], namespace["R2CCoordinationHub"], manager_broadcasts
@@ -1622,6 +1623,48 @@ class R2CCoordinationHubTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(30, ack["standbyParkSec"])
         self.assertEqual(77, ack["recommendedAppVersionCode"])
         self.assertEqual("https://example.org/r2c", ack["updateUrl"])
+
+    async def test_authenticated_hello_uses_and_returns_canonical_device_name(self):
+        class FakeControlPlaneStore:
+            async def assign_operational_device_name(self, *, credential_id, device_model):
+                self.assignment = (credential_id, device_model)
+                return "Mike D.'s iPad Pro"
+
+            async def get_organization_config_version_ms(self, organization_id):
+                return 1234
+
+        store = FakeControlPlaneStore()
+        method_globals = BaseHub._handle_hello.__globals__
+        prior_store = method_globals["control_plane_store"]
+        method_globals["control_plane_store"] = store
+        try:
+            websocket = FakeWebSocket()
+            credential = types.SimpleNamespace(
+                id="device-1",
+                organization_id="org-1",
+                device_name="iPad",
+            )
+            await self.hub.connect(websocket, device_credential=credential)
+            await self.hub.handle_message(websocket, {
+                "type": "hello",
+                "mapId": "MAP1",
+                "zoneId": "zone-mike",
+                "guid": "zone-mike",
+                "name": "iPad",
+                "deviceModel": "iPad Pro",
+                "lat": 39.3,
+                "lng": -121.3,
+            })
+        finally:
+            method_globals["control_plane_store"] = prior_store
+
+        ack = json.loads(websocket.sent_texts[0])
+        self.assertEqual("Mike D.'s iPad Pro", ack["canonicalDeviceName"])
+        self.assertEqual(("device-1", "iPad Pro"), store.assignment)
+        self.assertEqual(
+            "Mike D.'s iPad Pro",
+            self.hub.zone_store[("MAP1", "zone-mike")]["name"],
+        )
 
     async def test_ios_hello_uses_ios_specific_update_recommendation(self):
         ws_ios = FakeWebSocket()

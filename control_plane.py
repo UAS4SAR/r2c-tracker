@@ -160,6 +160,42 @@ AUDIT_EVENT_CATEGORY_PREFIXES = {
 }
 
 
+def operational_member_name(
+    display_name: str,
+    organization_operator_names: tuple[str, ...],
+) -> str:
+    """Return the shortest member name that distinguishes an R2C operator."""
+    words = display_name.strip().split()
+    if not words:
+        return "Team member"
+    first = words[0]
+    same_first = [
+        value.strip().split()
+        for value in organization_operator_names
+        if value.strip().split()
+        and value.strip().split()[0].casefold() == first.casefold()
+    ]
+    if len(same_first) <= 1:
+        return first
+    if len(words) > 1:
+        initial_label = f"{first} {words[-1][0].upper()}."
+        matching_initials = sum(
+            1
+            for value in same_first
+            if len(value) > 1 and value[-1][0].casefold() == words[-1][0].casefold()
+        )
+        if matching_initials <= 1:
+            return initial_label
+    return " ".join(words)
+
+
+def possessive_name(value: str) -> str:
+    clean = value.strip()
+    if not clean:
+        return "Team member's"
+    return clean + ("'" if clean.casefold().endswith("s") else "'s")
+
+
 def tablet_link_code(organization_designator: str, device_name: str) -> str:
     """Return the 32-bit base64url alias for a tablet's canonical path."""
     material = (
@@ -799,6 +835,7 @@ class DeviceCredential(Base):
         ForeignKey("enrollment_campaigns.id"), index=True
     )
     device_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    device_model: Mapped[str] = mapped_column(String(160), default="", nullable=False)
     platform: Mapped[str] = mapped_column(String(24), nullable=False)
     installation_id: Mapped[str] = mapped_column(
         String(128), default="", nullable=False, index=True
@@ -1269,6 +1306,7 @@ class DeviceCredentialAdminRecord:
     id: str
     organization_id: str
     device_name: str
+    device_model: str
     platform: str
     installation_id: str
     authorized_user_id: Optional[str]
@@ -1335,6 +1373,12 @@ class ActiveVideoStreamRecord:
         except ZoneInfoNotFoundError:
             zone = ZoneInfo("UTC")
         return as_utc(self.recorded_at).astimezone(zone)
+
+
+@dataclass(frozen=True)
+class PersistentRecordingLinkRecord:
+    device: DeviceCredentialRecord
+    stream: ActiveVideoStreamRecord
 
 
 @dataclass(frozen=True)
@@ -1828,6 +1872,11 @@ class ControlPlaneStore:
                 await connection.execute(text(
                     "ALTER TABLE device_credentials "
                     "ADD COLUMN installation_id VARCHAR(128) DEFAULT '' NOT NULL"
+                ))
+            if "device_model" not in device_credential_columns:
+                await connection.execute(text(
+                    "ALTER TABLE device_credentials "
+                    "ADD COLUMN device_model VARCHAR(160) DEFAULT '' NOT NULL"
                 ))
             await connection.execute(
                 update(DeviceCredential)
@@ -6014,6 +6063,7 @@ class ControlPlaneStore:
         organization_id: str,
         device_name: str,
         platform: str,
+        device_model: str = "",
         installation_id: str = "",
         functionality_release: int = 0,
         authorized_user_id: Optional[str] = None,
@@ -6021,6 +6071,7 @@ class ControlPlaneStore:
     ) -> IssuedDeviceCredential:
         issued_at = now or utc_now()
         clean_name = device_name.strip()
+        clean_model = " ".join(device_model.strip().split())[:160]
         clean_platform = platform.strip().lower()
         clean_installation_id = installation_id.strip().lower()
         if not clean_name or len(clean_name) > 160:
@@ -6076,6 +6127,7 @@ class ControlPlaneStore:
                 organization_id=organization_id,
                 campaign_id=campaign_id,
                 device_name=clean_name,
+                device_model=clean_model,
                 platform=clean_platform,
                 installation_id=clean_installation_id,
                 authorized_user_id=authorized_user_id,
@@ -6126,6 +6178,14 @@ class ControlPlaneStore:
             if campaign.redemption_count >= campaign.max_redemptions:
                 campaign.state = "exhausted"
             session.add(credential)
+            if authorized_user_id is not None and clean_model:
+                await session.flush()
+                await self._assign_operational_device_name(
+                    session,
+                    credential=credential,
+                    user=authorized_user,
+                    device_model=clean_model,
+                )
             session.add(
                 ControlPlaneAuditEvent(
                     organization_id=organization_id,
@@ -6155,7 +6215,7 @@ class ControlPlaneStore:
                 organization_id=organization_id,
                 designator=organization.designator,
                 token=token,
-                device_name=clean_name,
+                device_name=credential.device_name,
                 platform=clean_platform,
                 expires_at=expires_at,
                 state=credential.state,
@@ -6335,6 +6395,13 @@ class ControlPlaneStore:
             credential.authorized_user_id = user.id
             credential.reauth_requested_at = None
             credential.last_used_at = completed_at
+            if credential.device_model:
+                await self._assign_operational_device_name(
+                    session,
+                    credential=credential,
+                    user=user,
+                    device_model=credential.device_model,
+                )
             session.add(ControlPlaneAuditEvent(
                 organization_id=organization_id,
                 actor_type="organization_user",
@@ -6353,6 +6420,80 @@ class ControlPlaneStore:
             ))
             await session.commit()
             return self._device_credential_admin_record(credential, completed_at)
+
+    async def assign_operational_device_name(
+        self,
+        *,
+        credential_id: str,
+        device_model: str,
+    ) -> str:
+        """Assign the authenticated member/device name used by every R2C surface."""
+        clean_model = " ".join(device_model.strip().split())[:160]
+        async with self.sessions() as session:
+            credential = await session.get(DeviceCredential, credential_id)
+            if credential is None or credential.state != "active":
+                raise ControlPlaneError("Active organization device not found.")
+            if not clean_model or credential.authorized_user_id is None:
+                return ""
+            user = await session.get(OrganizationUser, credential.authorized_user_id)
+            if user is None or user.state != "active":
+                return ""
+            await self._assign_operational_device_name(
+                session,
+                credential=credential,
+                user=user,
+                device_model=clean_model,
+            )
+            await session.commit()
+            return credential.device_name
+
+    async def _assign_operational_device_name(
+        self,
+        session: AsyncSession,
+        *,
+        credential: DeviceCredential,
+        user: OrganizationUser,
+        device_model: str,
+    ) -> None:
+        # Serialize names within an organization so simultaneous enrollment or
+        # connection attempts cannot claim the same operator-visible identity.
+        await session.scalar(
+            select(Organization)
+            .where(Organization.id == credential.organization_id)
+            .with_for_update()
+        )
+        members = tuple((await session.scalars(
+            select(OrganizationUser).where(
+                OrganizationUser.organization_id == credential.organization_id,
+                OrganizationUser.state == "active",
+            )
+        )).all())
+        operator_names = tuple(
+            member.display_name
+            for member in members
+            if "r2c_device" in member.roles
+        )
+        owner = operational_member_name(user.display_name, operator_names)
+        base = f"{possessive_name(owner)} {device_model}"[:160].strip()
+        other_names = {
+            value.casefold()
+            for value in (await session.scalars(
+                select(DeviceCredential.device_name).where(
+                    DeviceCredential.organization_id == credential.organization_id,
+                    DeviceCredential.id != credential.id,
+                    DeviceCredential.state.in_(("active", "reauth_required")),
+                )
+            )).all()
+            if value
+        }
+        candidate = base
+        suffix = 2
+        while candidate.casefold() in other_names:
+            suffix_text = f"-{suffix}"
+            candidate = f"{base[:160 - len(suffix_text)].rstrip()}{suffix_text}"
+            suffix += 1
+        credential.device_model = device_model
+        credential.device_name = candidate
 
     async def list_device_credentials(
         self,
@@ -6374,6 +6515,125 @@ class ControlPlaneStore:
         return tuple(
             self._device_credential_admin_record(credential, checked_at)
             for credential in credentials
+        )
+
+    async def resolve_persistent_tablet_link_code(
+        self,
+        code: str,
+    ) -> Optional[DeviceCredentialRecord]:
+        """Resolve a tablet alias from durable organization device records.
+
+        The legacy six-character aliases can collide. Multiple credentials
+        representing the same organization/name are one logical target; an
+        alias matching different canonical targets is rejected.
+        """
+        clean_code = code.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{6}", clean_code):
+            return None
+        async with self.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(DeviceCredential, Organization.designator).join(
+                        Organization,
+                        Organization.id == DeviceCredential.organization_id,
+                    )
+                )
+            ).all()
+        matches: dict[
+            tuple[str, str], list[tuple[DeviceCredential, str]]
+        ] = {}
+        for credential, designator in rows:
+            expected = tablet_link_code(designator, credential.device_name)
+            if secrets.compare_digest(clean_code, expected):
+                key = (
+                    credential.organization_id,
+                    credential.device_name.strip().casefold(),
+                )
+                matches.setdefault(key, []).append((credential, designator))
+        if len(matches) != 1:
+            return None
+        candidates = next(iter(matches.values()))
+        credential, designator = max(
+            candidates,
+            key=lambda item: (
+                item[0].state in {"active", "reauth_required", "expired"},
+                as_utc(item[0].created_at),
+            ),
+        )
+        return DeviceCredentialRecord(
+            id=credential.id,
+            organization_id=credential.organization_id,
+            designator=designator,
+            device_name=credential.device_name,
+            platform=credential.platform,
+            installation_id=credential.installation_id or "",
+            functionality_release=credential.functionality_release,
+            expires_at=as_utc(credential.expires_at),
+        )
+
+    async def resolve_persistent_recording_link_code(
+        self,
+        code: str,
+    ) -> Optional[PersistentRecordingLinkRecord]:
+        """Resolve an exact locally stored recording from durable metadata."""
+        clean_code = code.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{6}", clean_code):
+            return None
+        async with self.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        ActiveVideoStream,
+                        DeviceCredential,
+                        Organization.designator,
+                    )
+                    .join(
+                        DeviceCredential,
+                        DeviceCredential.id == ActiveVideoStream.device_credential_id,
+                    )
+                    .join(
+                        Organization,
+                        Organization.id == ActiveVideoStream.organization_id,
+                    )
+                    .where(
+                        ActiveVideoStream.media_kind == "recording",
+                        DeviceCredential.organization_id
+                        == ActiveVideoStream.organization_id,
+                    )
+                )
+            ).all()
+        matches: dict[
+            tuple[str, str],
+            tuple[ActiveVideoStream, DeviceCredential, str],
+        ] = {}
+        for stream, credential, designator in rows:
+            expected = recording_link_code(
+                designator,
+                stream.device_name or credential.device_name,
+                stream.session_id,
+            )
+            if secrets.compare_digest(clean_code, expected):
+                matches[(credential.id, stream.session_id)] = (
+                    stream,
+                    credential,
+                    designator,
+                )
+        if len(matches) != 1:
+            return None
+        stream, credential, designator = next(iter(matches.values()))
+        device = DeviceCredentialRecord(
+            id=credential.id,
+            organization_id=credential.organization_id,
+            designator=designator,
+            device_name=credential.device_name,
+            platform=credential.platform,
+            installation_id=credential.installation_id or "",
+            functionality_release=credential.functionality_release,
+            expires_at=as_utc(credential.expires_at),
+        )
+        return PersistentRecordingLinkRecord(
+            device=device,
+            stream=self._active_video_stream_record(stream),
         )
 
     async def extend_device_credential(
@@ -6779,7 +7039,9 @@ class ControlPlaneStore:
                     created_at=seen_at,
                 )
                 session.add(stream)
-            if clean_device_name:
+            if clean_device_name and (
+                credential.authorized_user_id is None or not credential.device_model
+            ):
                 credential.device_name = clean_device_name
             meaningful_change = is_new_stream or any((
                 stream.state != "active",
@@ -8852,6 +9114,7 @@ class ControlPlaneStore:
             id=credential.id,
             organization_id=credential.organization_id,
             device_name=credential.device_name,
+            device_model=credential.device_model or "",
             platform=credential.platform,
             installation_id=credential.installation_id or "",
             authorized_user_id=credential.authorized_user_id,

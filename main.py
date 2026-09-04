@@ -263,6 +263,7 @@ def reviewed_flight_archive_members(tar: tarfile.TarFile) -> list[tarfile.TarInf
 class DeviceEnrollmentRedeemRequest(BaseModel):
     token: str = Field(min_length=24, max_length=4096)
     device_name: str = Field(min_length=1, max_length=160)
+    device_model: str = Field(default="", max_length=160)
     platform: Literal["android", "ios"]
     installation_id: str = Field(default="", max_length=128)
     functionality_release: int = Field(default=0, ge=0, le=1_000_000)
@@ -1212,12 +1213,20 @@ async def protect_control_plane_pages(request: Request, call_next):
         r")",
         path,
     )
+    short_video_link_page = re.fullmatch(
+        r"/[tv]/[A-Za-z0-9_-]{6}",
+        path,
+    )
+    if short_video_link_page is not None:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
     if (
         path.startswith("/platform-admin/")
         or path == "/google/callback"
         or path == "/microsoft/callback"
         or path == "/login"
         or path == "/organizations/select"
+        or short_video_link_page is not None
         or (
             path == "/"
             and request.session.get("organization_user_id")
@@ -1468,6 +1477,11 @@ class R2CCoordinationHub:
             if len(matches) != 1:
                 return None
             return next(iter(matches.values()))
+
+    async def is_device_connected(self, device_credential_id: str) -> bool:
+        """Return whether this exact enrolled device has a live R2C socket."""
+        async with self._lock:
+            return device_credential_id in self._connections_by_device_credential_id
 
     async def list_connected_tablets(
         self,
@@ -3224,6 +3238,22 @@ class R2CCoordinationHub:
         zone_id = payload.get("zoneId", "") or payload.get("guid", "")
         now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
         async with self._lock:
+            connection = self._connections.get(websocket)
+            credential = connection.device_credential if connection is not None else None
+        canonical_device_name = ""
+        if credential is not None and control_plane_store is not None:
+            try:
+                canonical_device_name = await control_plane_store.assign_operational_device_name(
+                    credential_id=credential.id,
+                    device_model=str(payload.get("deviceModel", "") or ""),
+                )
+            except ControlPlaneError as exc:
+                logger.warning(
+                    "Unable to assign canonical organization device name credential=%s: %s",
+                    credential.id,
+                    exc,
+                )
+        async with self._lock:
             conn = self._connections[websocket]
             organization_id = conn.organization_id
             lat = float(payload.get("lat", 0.0) or 0.0)
@@ -3251,16 +3281,12 @@ class R2CCoordinationHub:
             conn.zone_id = zone_id
             conn.guid = payload.get("guid", zone_id)
             reported_name = str(payload.get("name", zone_id) or zone_id)[:160]
-            conn.name = reported_name
-            if conn.device_credential is not None and reported_name.strip():
-                # The marker code is computed from the tablet's current
-                # operator-visible name, so live alias resolution must use the
-                # name reported by this authenticated connection rather than a
-                # possibly older enrollment label.
+            conn.name = canonical_device_name or reported_name
+            if conn.device_credential is not None and canonical_device_name:
                 conn.device_credential = type(conn.device_credential)(
                     **{
                         **vars(conn.device_credential),
-                        "device_name": reported_name.strip(),
+                        "device_name": canonical_device_name,
                     }
                 )
             conn.app_version = str(payload.get("appVersion", "") or "")
@@ -3317,6 +3343,8 @@ class R2CCoordinationHub:
                 else 0
             ),
         }
+        if canonical_device_name:
+            hello_ack["canonicalDeviceName"] = canonical_device_name
         app_platform = str(payload.get("appPlatform", "") or "").strip().lower()
         if app_platform in {"ios", "ipados"}:
             recommended_version_code = R2C_RECOMMENDED_IOS_APP_BUILD_NUMBER
@@ -11486,6 +11514,7 @@ async def redeem_device_enrollment(payload: DeviceEnrollmentRedeemRequest):
             campaign_id=campaign.id,
             organization_id=organization.id,
             device_name=payload.device_name,
+            device_model=payload.device_model,
             platform=payload.platform,
             installation_id=payload.installation_id,
             functionality_release=payload.functionality_release,
@@ -12658,17 +12687,57 @@ async def organization_r2c_websocket_endpoint(
 
 @app.get("/t/{tablet_code}")
 async def connected_tablet_short_link(
+        request: Request,
         tablet_code: str):
-    """Resolve an ephemeral tablet alias to its authenticated portal path."""
-    tablet = await r2c_hub.resolve_tablet_link_code(tablet_code)
+    """Resolve a persistent tablet alias to an authenticated availability page."""
+    tablet = (
+        await control_plane_store.resolve_persistent_tablet_link_code(
+            tablet_code
+        )
+        if control_plane_store is not None
+        else None
+    )
     if tablet is None:
-        raise HTTPException(status_code=404, detail="R2C tablet is not connected.")
-    return RedirectResponse(
-        url=(
-            f"/{tablet.designator.lower()}/streams/"
-            f"{quote(tablet.device_name, safe='')}"
-        ),
-        status_code=status.HTTP_303_SEE_OTHER,
+        return templates.TemplateResponse(
+            request=request,
+            name="organization_link_status.html",
+            context={
+                "request": request,
+                "include_leaflet": False,
+                "unresolved": True,
+            },
+            status_code=status.HTTP_404_NOT_FOUND,
+            headers={"Cache-Control": "no-store"},
+        )
+    organization, user = await require_organization_user(
+        request,
+        tablet.designator,
+        ("video_requester",),
+        redirect_to_login=True,
+        login_next=f"/t/{tablet_code}",
+    )
+    if await r2c_hub.is_device_connected(tablet.id):
+        return RedirectResponse(
+            url=(
+                f"/{tablet.designator.lower()}/streams/"
+                f"{quote(tablet.device_name, safe='')}"
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+            headers={"Cache-Control": "no-store"},
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="organization_link_status.html",
+        context={
+            "request": request,
+            "include_leaflet": False,
+            "organization": organization,
+            "organization_page_designator": organization.designator,
+            "organization_identity_name": user.display_name,
+            "link_kind": "tablet",
+            "tablet": tablet,
+            "connected": False,
+        },
         headers={"Cache-Control": "no-store"},
     )
 
@@ -12695,22 +12764,76 @@ async def connected_captured_stream_short_link(stream_code: str):
 
 
 @app.get("/v/{recording_code}")
-async def connected_recording_short_link(recording_code: str):
-    """Resolve a stable recording alias to one exact captured video."""
-    resolved = await r2c_hub.resolve_recording_link_code(recording_code)
-    if resolved is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Captured recording is not available.",
+async def connected_recording_short_link(
+        request: Request,
+        recording_code: str):
+    """Resolve one local recording to an authenticated availability page."""
+    resolved = (
+        await control_plane_store.resolve_persistent_recording_link_code(
+            recording_code
         )
-    tablet, stream = resolved
-    return RedirectResponse(
-        url=(
-            f"/{tablet.designator.lower()}/streams/"
-            f"{quote(tablet.device_name, safe='')}/session/"
-            f"{quote(stream.session_id, safe='')}"
-        ),
-        status_code=status.HTTP_303_SEE_OTHER,
+        if control_plane_store is not None
+        else None
+    )
+    if resolved is None:
+        return templates.TemplateResponse(
+            request=request,
+            name="organization_link_status.html",
+            context={
+                "request": request,
+                "include_leaflet": False,
+                "unresolved": True,
+            },
+            status_code=status.HTTP_404_NOT_FOUND,
+            headers={"Cache-Control": "no-store"},
+        )
+    tablet = resolved.device
+    stream = resolved.stream
+    organization, user = await require_organization_user(
+        request,
+        tablet.designator,
+        ("video_requester",),
+        redirect_to_login=True,
+        login_next=f"/v/{recording_code}",
+    )
+    connected = await r2c_hub.is_device_connected(tablet.id)
+    active_streams = (
+        await control_plane_store.list_active_video_streams(
+            tablet.organization_id
+        )
+        if connected
+        else ()
+    )
+    available = any(
+        item.device_credential_id == tablet.id
+        and item.session_id == stream.session_id
+        and item.media_kind == "recording"
+        for item in active_streams
+    )
+    if available:
+        return RedirectResponse(
+            url=(
+                f"/{tablet.designator.lower()}/streams/"
+                f"{quote(tablet.device_name, safe='')}/session/"
+                f"{quote(stream.session_id, safe='')}"
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+            headers={"Cache-Control": "no-store"},
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="organization_link_status.html",
+        context={
+            "request": request,
+            "include_leaflet": False,
+            "organization": organization,
+            "organization_page_designator": organization.designator,
+            "organization_identity_name": user.display_name,
+            "link_kind": "recording",
+            "tablet": tablet,
+            "recording": stream,
+            "connected": connected,
+        },
         headers={"Cache-Control": "no-store"},
     )
 

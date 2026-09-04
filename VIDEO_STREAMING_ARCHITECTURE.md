@@ -101,11 +101,22 @@ explicit user demand; it does not periodically poll the catalog.
 
 Presence does not depend on a stream-to-telemetry association. A newly started
 camera therefore appears immediately in the authenticated tablet inventory
-reached through its ephemeral `/t/<code>` link. RID2Caltopo adds CalTopo Live
+reached through its `/t/<code>` link. The link resolves from persistent device
+metadata and requires an active organization member with video-request access
+before displaying the tablet name or connection state. An offline tablet page
+explains that its streams and recordings remain on the pilot's or visual
+observer's device. RID2Caltopo adds CalTopo Live
 Track video metadata only after a telemetry identity matches the stream, and
 adds an Archived Track `/s/<code>` link only when the matching stream was
 captured locally. An unmatched stream remains available through the tablet
 inventory without being attached to either track type.
+
+An exact recording `/v/<code>` link also resolves from persistent metadata.
+When the authorized requester opens it while the tablet is unavailable, the
+organization page identifies the tablet, incident, aircraft, recording time,
+and duration without copying the video into tracker storage. Playback or
+download becomes available only when that tablet reconnects and advertises the
+recording again.
 
 ## Request delivery
 

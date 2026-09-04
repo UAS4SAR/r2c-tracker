@@ -1,3 +1,8 @@
+v1.4.83:
+* Assign each compatible authenticated organization tablet a guaranteed-unique member-and-device-model name and return it to RID2Caltopo for consistent app, CalTopo marker, and Tracker identity.
+* Preserve the existing name for older organization app versions that do not report a hardware model and direct operators to upgrade instead of guessing; leave standalone device naming unchanged.
+* Resolve CalTopo tablet and recording links from persistent metadata, require organization video access before revealing details, and show which pilot or VO tablet holds unavailable local video.
+
 v1.4.82: deployed
 * Retry a remote Live Feed connection once when it establishes without delivering video, preserving the approved viewing request during recovery and returning to normal failure handling if the retry also fails.
 * Retire an R2C tablet connection into Tracker standby after 60 seconds without any tablet message, clearing stale incident-map presence when field connectivity disappears without a clean disconnect.
