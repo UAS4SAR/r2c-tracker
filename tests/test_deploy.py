@@ -132,6 +132,7 @@ class DeployScriptTest(unittest.TestCase):
         for module in (
             "faa_proxy.py",
             "control_plane.py",
+            "subscription_plans.py",
             "enrollment.py",
             "platform_admin.py",
             "platform_admin_identity.py",

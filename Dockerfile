@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir -r requirements.lock
 COPY main.py .
 COPY faa_proxy.py .
 COPY control_plane.py .
+COPY subscription_plans.py .
 COPY enrollment.py .
 COPY platform_admin.py .
 COPY platform_admin_identity.py .
