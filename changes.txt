@@ -1,4 +1,4 @@
-v1.4.86:
+v1.4.86: deployed
 * Let organization administrators distinguish replacement tablet authorizations with an organization-scoped device-identity fingerprint, a live Currently connected marker, and an audited Retire authorization action that leaves the replacement usable.
 * Replace relay-price language on organization and tablet Streams pages with month-to-date or year-to-date viewer-hours and estimated remaining subscription capacity when an allowance is configured.
 * Release failed or ended browser video sessions without waiting on terminal telemetry, preventing recordings from remaining marked Video in use after playback stops or fails.
