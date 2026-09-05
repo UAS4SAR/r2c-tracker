@@ -1,4 +1,4 @@
-v1.4.85:
+v1.4.85: deployed
 * Add a dormant provider-neutral subscription catalog with a 45-day trial, $25, $50, and $100 monthly planning tiers, a 10% annual-payment discount, and a custom regional or enterprise tier; payments and paid-tier enforcement remain disabled.
 * Replace infrastructure-cost detail in organization management with monthly or annual viewer-hour utilization and an estimated remaining allowance when an absolute allowance has been assigned.
 * Keep cloud-cost allocation visible only to platform administrators for internal reconciliation and margin planning.
