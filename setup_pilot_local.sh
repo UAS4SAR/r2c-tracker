@@ -3,7 +3,7 @@ set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 CONFIG_NAME="${R2C_GCLOUD_CONFIG_NAME:-r2c-tracker-pilot}"
-ACCOUNT="${R2C_GCLOUD_ACCOUNT:-kjtsar@kjt.us}"
+ACCOUNT="${R2C_GCLOUD_ACCOUNT:-kjt@uas4sar.com}"
 PROJECT="${R2C_GCLOUD_PROJECT:-r2c-tracker-pilot}"
 REGION="${R2C_GCLOUD_REGION:-us-west1}"
 ENV_FILE="${R2C_PILOT_ENV_FILE:-${SCRIPT_DIR}/.env.pilot.local}"

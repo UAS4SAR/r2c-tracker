@@ -82,8 +82,12 @@ Do not switch `CONTROL_PLANE_MODE` to `live` until all of these are true:
    rate limits.
 7. QR redemption exchanges the signed campaign locator for tenant-scoped,
    short-lived credentials. It must not return a shared long-lived upload key.
-8. Payment integration is still in test mode and webhook signatures plus
-   idempotency are verified.
+8. Payment integration remains disabled until the catalog, absolute viewer-hour
+   allowances, incident-safe entitlement policy, and migration plan are approved.
+9. Before Stripe is enabled, Price IDs are allowlisted, credentials and webhook
+   signing secrets are stored in Secret Manager, webhook signatures and
+   idempotency are verified, and current subscriptions are retrieved rather than
+   inferred from webhook delivery order. See `SUBSCRIPTION_MODEL.md`.
 
 Cloud SQL creation and payment-provider enrollment can incur charges or create
 external obligations, so they are intentionally not performed by the local
@@ -105,7 +109,7 @@ Prepare or verify the pilot resources with:
 
 ```bash
 ./setup_pilot_control_plane.sh
-./set_super_admin.sh kjtsar@kjt.us "R2C Platform Administrator"
+./set_super_admin.sh kjt@uas4sar.com "R2C Platform Administrator"
 ./setup_pilot_local.sh
 ```
 

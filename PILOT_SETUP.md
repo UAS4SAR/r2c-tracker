@@ -105,7 +105,7 @@ versions. Configure or rotate the administrator without restarting the
 service:
 
 ```bash
-./set_super_admin.sh kjtsar@kjt.us "R2C Platform Administrator"
+./set_super_admin.sh kjt@uas4sar.com "R2C Platform Administrator"
 ```
 
 The guarded release command prepares the isolated staging resources for each

@@ -221,6 +221,11 @@ class DeployScriptTest(unittest.TestCase):
         script = (repo / "setup_pilot_local.sh").read_text()
 
         self.assertIn('CONFIG_NAME="${R2C_GCLOUD_CONFIG_NAME:-r2c-tracker-pilot}"', script)
+        self.assertIn(
+            'ACCOUNT="${R2C_GCLOUD_ACCOUNT:-kjt@uas4sar.com}"',
+            script,
+        )
+        self.assertNotIn("kjtsar@kjt.us", script)
         self.assertIn('gcloud --configuration="${CONFIG_NAME}"', script)
         self.assertIn(".env.pilot.local", script)
         self.assertIn('chmod 600 "${ENV_FILE}"', script)

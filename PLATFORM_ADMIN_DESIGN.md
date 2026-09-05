@@ -3,8 +3,9 @@
 ## Purpose
 
 The platform control plane manages organization provisioning, aggregate usage,
-Google Cloud cost allocation, extended-beta allowances, organizations, and platform
-auditing. It is separate from every organization's operational tracker data.
+internal Google Cloud cost allocation, extended-beta allowances, subscription
+metadata, organizations, and platform auditing. It is separate from every
+organization's operational tracker data.
 
 The website super-admin must not have an application-level path to:
 
@@ -91,12 +92,28 @@ The first contact may hold all roles, but each role can later be delegated.
 
 - organization ID;
 - calendar billing month;
-- $10.00 platform-funded allowance;
+- $20.00 platform-funded allowance;
 - allocated actual and projected cost;
 - billing-data cutoff;
 - month-end boundary and video-disabled timestamp.
 
 The platform has no payment credentials, checkout route, or payment webhook.
+
+### subscriptions
+
+- provider-neutral plan code and monthly or annual billing interval;
+- subscription lifecycle and collection method;
+- server-only provider, customer, subscription, and price references;
+- authoritative current-period boundaries and provider snapshot timestamp;
+- cancellation-at-period-end state;
+- optional contracted viewer-hour allowance.
+
+The dormant subscription model does not collect payments or change operational
+access. Organization pages show viewer-hours used and estimated hours remaining,
+not infrastructure costs. Monthly subscriptions use a month-to-date view and
+annual subscriptions use a year-to-date view, clipped to the authoritative
+subscription period when one is available. See `SUBSCRIPTION_MODEL.md` for the
+catalog and the guarded future Stripe connection sequence.
 
 ### usage_daily
 
@@ -121,8 +138,8 @@ calendar-month usage allowance.
 
 The allowance worker reconciles current, non-stale Google Cloud billing export
 data to privacy-safe organization allocation weights. It sends a one-time monthly
-notice when projected usage exceeds $10.00 and another when actual allocated
-usage exceeds $10.00. At $9.00 actual allocated usage, it terminates active remote
+notice when projected usage exceeds $20.00 and another when actual allocated
+usage exceeds $20.00. At $18.00 actual allocated usage, it terminates active remote
 video requests, rejects new streaming requests through month end, and sends a
 separate notice. Flight logs, recording downloads, and R2C-based drone-owner
 arbitration remain enabled. Notices go to the first active billing administrator,
@@ -209,8 +226,8 @@ Application audit events use a separate operational schedule:
 4. Create the independent control-plane database and immutable billing ledger.
 5. Implement organization onboarding in simulation mode.
 6. Connect provisioning steps to Google Cloud resources.
-7. Reconcile the $10.00 monthly allowance from current billing exports.
-8. Enforce and notify the video-only $9.00 cutoff.
+7. Reconcile the $20.00 monthly allowance from current billing exports.
+8. Enforce and notify the video-only $18.00 cutoff.
 
 ## Billing export integration
 
@@ -220,7 +237,7 @@ projects on the billing account. Until Google's first standard or detailed
 export table arrives, the dashboard reports an export-pending state with zero
 values rather than presenting illustrative costs as live.
 
-The live dashboard and allowance worker allocate costs. Compute, network (including
+The platform-admin dashboard and allowance worker allocate costs. Compute, network (including
 TURN relay), storage, and database costs are distributed in proportion to their
 matching privacy-safe organization meters. A category with no measured usage,
 and the billing export's unclassified `other` cost, is divided equally among
@@ -229,6 +246,8 @@ organizations do not share platform costs. Sub-micro-dollar rounding is
 reconciled deterministically so attributed plus unallocated cost always matches
 the Google bill. Allocations are not written to the billing ledger and are not
 charges; they measure consumption of the platform-funded monthly allowance.
+These costs are internal operating data and must not be passed to organization
+management templates or used as the paid-plan utilization measure.
 
 ## Device enrollment QR boundary
 

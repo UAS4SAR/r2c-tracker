@@ -102,6 +102,11 @@ from turn_credentials import (
     CloudflareTurnCredentialProvider,
     sanitize_ice_servers,
 )
+from subscription_plans import (
+    ANNUAL_DISCOUNT_PERCENT,
+    DEFAULT_TRIAL_DAYS,
+    SUBSCRIPTION_PLANS,
+)
 from app_store_connect_webhook import (
     AppStoreConnectSignatureError,
     AppStoreConnectWebhookError,
@@ -472,6 +477,40 @@ def forecast_organization_cost(actual_cost: Decimal, through: datetime) -> Decim
     )
     return (actual_cost * Decimal(days_in_month) / elapsed_days).quantize(
         Decimal("0.01")
+    )
+
+
+def subscription_utilization_window(subscription, now: datetime):
+    """Return the customer-visible month or subscription-year usage window."""
+    reference = now.astimezone(UTC)
+    interval = subscription.billing_interval if subscription is not None else "none"
+    provider_start = (
+        subscription.current_period_starts_at if subscription is not None else None
+    )
+    provider_end = (
+        subscription.current_period_ends_at if subscription is not None else None
+    )
+    if provider_start is not None and provider_end is not None:
+        return (
+            provider_start,
+            provider_end,
+            "year to date" if interval == "annual" else "month to date",
+        )
+    if interval == "annual":
+        return (
+            datetime(reference.year, 1, 1, tzinfo=UTC),
+            datetime(reference.year + 1, 1, 1, tzinfo=UTC),
+            "year to date",
+        )
+    month_end = (
+        datetime(reference.year + 1, 1, 1, tzinfo=UTC)
+        if reference.month == 12
+        else datetime(reference.year, reference.month + 1, 1, tzinfo=UTC)
+    )
+    return (
+        datetime(reference.year, reference.month, 1, tzinfo=UTC),
+        month_end,
+        "month to date",
     )
 
 
@@ -7183,6 +7222,13 @@ async def platform_admin_organizations(
                     if record.id in usage_aggregates
                     else AggregateUsage()
                 ),
+                subscription_plan_code=record.subscription_plan_code,
+                subscription_billing_interval=(
+                    record.subscription_billing_interval
+                ),
+                subscription_period_ends_at=(
+                    record.subscription_period_ends_at
+                ),
             )
             for record in records
         )
@@ -7232,6 +7278,11 @@ async def platform_admin_organizations(
             "audit_recent_limit": AUDIT_EVENT_RECENT_LIMIT,
             "audit_retention_days": AUDIT_EVENT_RETENTION_DAYS,
             "managed_access_requests": managed_access_requests,
+            "subscription_plans": SUBSCRIPTION_PLANS,
+            "subscription_trial_days": DEFAULT_TRIAL_DAYS,
+            "subscription_annual_discount_percent": (
+                ANNUAL_DISCOUNT_PERCENT
+            ),
             "platform_admin": user,
             "account_csrf_token": csrf_token(
                 request,
@@ -8935,22 +8986,24 @@ async def _organization_admin_page(
                 config_proposal_wait_error = organization_config_upgrade_message(
                     proposal_source
                 )
-    organization_cost = None
-    billing_snapshot = None
+    streaming_utilization = None
+    streaming_utilization_label = "month to date"
     beta_allowance = None
     if {"organization_owner", "billing_admin"}.intersection(user.roles):
-        billing_snapshot, records, usage_aggregates, beta_allowance = await asyncio.gather(
-            asyncio.to_thread(load_platform_billing_snapshot),
-            control_plane_store.list_organizations(),
-            control_plane_store.month_to_date_usage_aggregates(),
+        subscription, beta_allowance = await asyncio.gather(
+            control_plane_store.get_subscription(organization.id),
             control_plane_store.get_extended_beta_allowance(organization.id),
         )
-        allocation_inputs = platform_allocation_inputs(records, usage_aggregates)
-        allocated_costs, _unallocated = allocate_platform_costs(
-            billing_snapshot.actual_cost_breakdown_mtd,
-            allocation_inputs if billing_snapshot.source_status == "ready" else {},
+        utilization_now = datetime.now(UTC)
+        period_start, period_end, streaming_utilization_label = (
+            subscription_utilization_window(subscription, utilization_now)
         )
-        organization_cost = allocated_costs.get(organization.id)
+        streaming_utilization = await control_plane_store.streaming_utilization(
+            organization_id=organization.id,
+            period_starts_at=period_start,
+            period_ends_at=period_end,
+            as_of=utilization_now,
+        )
     audit_page = None
     if section == "audit":
         audit_page = await control_plane_store.search_audit_events(
@@ -8982,9 +9035,9 @@ async def _organization_admin_page(
             "expiring_device_credentials": expiring_device_credentials,
             "can_manage_device_credentials": can_manage_device_credentials,
             "ledger_entries": ledger_entries,
-            "organization_cost": organization_cost,
+            "streaming_utilization": streaming_utilization,
+            "streaming_utilization_label": streaming_utilization_label,
             "beta_allowance": beta_allowance,
-            "billing_snapshot": billing_snapshot,
             "csrf_token": csrf_token(request, "organization_admin"),
             "simulation": CONTROL_PLANE_SIMULATION,
             "invitation_url": invitation_url,

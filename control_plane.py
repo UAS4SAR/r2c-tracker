@@ -37,6 +37,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from subscription_plans import SUBSCRIPTION_PLAN_BY_CODE
+
 
 DESIGNATOR_RE = re.compile(r"^[A-Z][A-Z0-9]{1,15}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -150,6 +152,18 @@ AUDIT_EVENT_PAGE_SIZE = 50
 AUDIT_EVENT_EXPORT_LIMIT = 10_000
 EXTENDED_BETA_MONTHLY_ALLOWANCE = Decimal("20.00")
 EXTENDED_BETA_VIDEO_CUTOFF = Decimal("18.00")
+PAID_SUBSCRIPTION_STATES = frozenset({
+    "trialing",
+    "active",
+    "past_due",
+    "paused",
+    "canceled",
+    "unpaid",
+    "incomplete",
+    "incomplete_expired",
+})
+SUBSCRIPTION_BILLING_INTERVALS = frozenset({"monthly", "annual", "custom"})
+SUBSCRIPTION_COLLECTION_METHODS = frozenset({"automatic", "invoice"})
 AUDIT_EVENT_CATEGORY_PREFIXES = {
     "administration": ("organization.", "administrator.", "member."),
     "billing": ("billing.",),
@@ -613,8 +627,25 @@ class Subscription(Base):
     billing_cadence: Mapped[str] = mapped_column(
         String(24), default="not configured"
     )
+    plan_code: Mapped[str] = mapped_column(String(48), default="extended_beta")
+    billing_interval: Mapped[str] = mapped_column(String(24), default="none")
+    payment_provider: Mapped[str] = mapped_column(String(48), default="")
     external_customer_id: Mapped[str] = mapped_column(String(160), default="")
     external_subscription_id: Mapped[str] = mapped_column(String(160), default="")
+    external_price_id: Mapped[str] = mapped_column(String(160), default="")
+    current_period_starts_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    current_period_ends_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False)
+    provider_snapshot_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    video_allowance_hours: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(12, 3)
+    )
     trial_starts_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True)
     )
@@ -1098,6 +1129,53 @@ class OrganizationRecord:
     credit_balance: Decimal = Decimal("0.00")
     primary_admin_postal_address: str = ""
     primary_admin_phone: str = ""
+    subscription_plan_code: str = "extended_beta"
+    subscription_billing_interval: str = "none"
+    subscription_period_ends_at: Optional[datetime] = None
+    subscription_video_allowance_hours: Optional[Decimal] = None
+
+
+@dataclass(frozen=True)
+class SubscriptionRecord:
+    organization_id: str
+    plan_code: str
+    state: str
+    collection_method: str
+    billing_interval: str
+    payment_provider: str
+    external_customer_id: str
+    external_subscription_id: str
+    external_price_id: str
+    trial_starts_at: Optional[datetime]
+    trial_ends_at: Optional[datetime]
+    current_period_starts_at: Optional[datetime]
+    current_period_ends_at: Optional[datetime]
+    cancel_at_period_end: bool
+    provider_snapshot_at: Optional[datetime]
+    video_allowance_hours: Optional[Decimal]
+
+
+@dataclass(frozen=True)
+class StreamingUtilizationRecord:
+    period_starts_at: datetime
+    period_ends_at: datetime
+    used_seconds: int
+    allowance_hours: Optional[Decimal]
+
+    @property
+    def used_hours(self) -> Decimal:
+        return (Decimal(self.used_seconds) / Decimal(3600)).quantize(
+            Decimal("0.01")
+        )
+
+    @property
+    def remaining_hours(self) -> Optional[Decimal]:
+        if self.allowance_hours is None:
+            return None
+        return max(
+            Decimal("0"),
+            Decimal(self.allowance_hours) - self.used_hours,
+        ).quantize(Decimal("0.01"))
 
 
 @dataclass(frozen=True)
@@ -1724,6 +1802,57 @@ class ControlPlaneStore:
                     "ADD COLUMN device_access_policy VARCHAR(32) "
                     "DEFAULT 'member_verified' NOT NULL"
                 ))
+            subscription_columns = await connection.run_sync(
+                lambda sync_connection: {
+                    item["name"]
+                    for item in inspect(sync_connection).get_columns("subscriptions")
+                }
+            )
+            subscription_text_columns = {
+                "plan_code": (48, "extended_beta"),
+                "billing_interval": (24, "none"),
+                "payment_provider": (48, ""),
+                "external_price_id": (160, ""),
+            }
+            for column_name, (size, default) in subscription_text_columns.items():
+                if column_name not in subscription_columns:
+                    escaped_default = default.replace("'", "''")
+                    await connection.execute(text(
+                        "ALTER TABLE subscriptions "
+                        f"ADD COLUMN {column_name} VARCHAR({size}) "
+                        f"DEFAULT '{escaped_default}' NOT NULL"
+                    ))
+            timestamp_type = (
+                "TIMESTAMP WITH TIME ZONE"
+                if self.engine.dialect.name == "postgresql"
+                else "DATETIME"
+            )
+            for column_name in (
+                "current_period_starts_at",
+                "current_period_ends_at",
+                "provider_snapshot_at",
+            ):
+                if column_name not in subscription_columns:
+                    await connection.execute(text(
+                        "ALTER TABLE subscriptions "
+                        f"ADD COLUMN {column_name} {timestamp_type}"
+                    ))
+            if "cancel_at_period_end" not in subscription_columns:
+                boolean_type = (
+                    "BOOLEAN"
+                    if self.engine.dialect.name == "postgresql"
+                    else "INTEGER"
+                )
+                await connection.execute(text(
+                    "ALTER TABLE subscriptions "
+                    f"ADD COLUMN cancel_at_period_end {boolean_type} "
+                    "DEFAULT FALSE NOT NULL"
+                ))
+            if "video_allowance_hours" not in subscription_columns:
+                await connection.execute(text(
+                    "ALTER TABLE subscriptions "
+                    "ADD COLUMN video_allowance_hours NUMERIC(12, 3)"
+                ))
             contact_columns = await connection.run_sync(
                 lambda sync_connection: {
                     item["name"]
@@ -2095,10 +2224,12 @@ class ControlPlaneStore:
                     organization.archived_from_lifecycle_state = "extended_beta"
             subscriptions = (await session.scalars(select(Subscription))).all()
             for subscription in subscriptions:
-                if subscription.state != "archived":
+                if subscription.state in {"trial", "grace", "funded"}:
                     subscription.state = "extended_beta"
                     subscription.collection_method = "none"
                     subscription.billing_cadence = "calendar month allowance"
+                    subscription.plan_code = "extended_beta"
+                    subscription.billing_interval = "none"
                     subscription.trial_starts_at = None
                     subscription.trial_ends_at = None
             await session.execute(
@@ -2134,6 +2265,8 @@ class ControlPlaneStore:
                         ),
                         collection_method="none",
                         billing_cadence="calendar month allowance",
+                        plan_code="extended_beta",
+                        billing_interval="none",
                         trial_starts_at=None,
                         trial_ends_at=None,
                         created_at=organization.created_at,
@@ -2716,6 +2849,8 @@ class ControlPlaneStore:
             state="extended_beta",
             collection_method="none",
             billing_cadence="calendar month allowance",
+            plan_code="extended_beta",
+            billing_interval="none",
             trial_starts_at=None,
             trial_ends_at=None,
             created_at=created_at,
@@ -2787,6 +2922,14 @@ class ControlPlaneStore:
             credit_balance=Decimal("0.00"),
             primary_admin_postal_address=contact.postal_address,
             primary_admin_phone=contact.phone,
+            subscription_plan_code=subscription.plan_code,
+            subscription_billing_interval=subscription.billing_interval,
+            subscription_period_ends_at=as_utc(subscription.current_period_ends_at),
+            subscription_video_allowance_hours=(
+                Decimal(subscription.video_allowance_hours)
+                if subscription.video_allowance_hours is not None
+                else None
+            ),
         )
 
     async def mark_organization_invitation_sent(
@@ -2881,6 +3024,8 @@ class ControlPlaneStore:
             subscription.state = "extended_beta"
             subscription.collection_method = "none"
             subscription.billing_cadence = "calendar month allowance"
+            subscription.plan_code = "extended_beta"
+            subscription.billing_interval = "none"
             subscription.trial_starts_at = None
             subscription.trial_ends_at = None
             subscription.updated_at = activated_at
@@ -2972,6 +3117,16 @@ class ControlPlaneStore:
                 ),
                 primary_admin_postal_address=contact.postal_address,
                 primary_admin_phone=contact.phone,
+                subscription_plan_code=subscription.plan_code,
+                subscription_billing_interval=subscription.billing_interval,
+                subscription_period_ends_at=as_utc(
+                    subscription.current_period_ends_at
+                ),
+                subscription_video_allowance_hours=(
+                    Decimal(subscription.video_allowance_hours)
+                    if subscription.video_allowance_hours is not None
+                    else None
+                ),
             )
             for organization, contact, subscription in rows
         )
@@ -3443,6 +3598,8 @@ class ControlPlaneStore:
                 subscription.state = "extended_beta"
                 subscription.collection_method = "none"
                 subscription.billing_cadence = "calendar month allowance"
+                subscription.plan_code = "extended_beta"
+                subscription.billing_interval = "none"
                 subscription.trial_starts_at = None
                 subscription.trial_ends_at = None
                 subscription.updated_at = restored_at
@@ -3489,6 +3646,229 @@ class ControlPlaneStore:
             ),
             None,
         )
+
+    @staticmethod
+    def _subscription_record(subscription: Subscription) -> SubscriptionRecord:
+        return SubscriptionRecord(
+            organization_id=subscription.organization_id,
+            plan_code=subscription.plan_code,
+            state=subscription.state,
+            collection_method=subscription.collection_method,
+            billing_interval=subscription.billing_interval,
+            payment_provider=subscription.payment_provider,
+            external_customer_id=subscription.external_customer_id,
+            external_subscription_id=subscription.external_subscription_id,
+            external_price_id=subscription.external_price_id,
+            trial_starts_at=as_utc(subscription.trial_starts_at),
+            trial_ends_at=as_utc(subscription.trial_ends_at),
+            current_period_starts_at=as_utc(
+                subscription.current_period_starts_at
+            ),
+            current_period_ends_at=as_utc(subscription.current_period_ends_at),
+            cancel_at_period_end=bool(subscription.cancel_at_period_end),
+            provider_snapshot_at=as_utc(subscription.provider_snapshot_at),
+            video_allowance_hours=(
+                Decimal(subscription.video_allowance_hours)
+                if subscription.video_allowance_hours is not None
+                else None
+            ),
+        )
+
+    async def get_subscription(
+        self,
+        organization_id: str,
+    ) -> Optional[SubscriptionRecord]:
+        async with self.sessions() as session:
+            subscription = await session.scalar(
+                select(Subscription).where(
+                    Subscription.organization_id == organization_id
+                )
+            )
+        return (
+            self._subscription_record(subscription)
+            if subscription is not None
+            else None
+        )
+
+    async def streaming_utilization(
+        self,
+        *,
+        organization_id: str,
+        period_starts_at: datetime,
+        period_ends_at: datetime,
+        as_of: Optional[datetime] = None,
+    ) -> StreamingUtilizationRecord:
+        """Measure organization viewer-hours overlapping a subscription period."""
+        starts_at = as_utc(period_starts_at)
+        ends_at = as_utc(period_ends_at)
+        measured_at = min(as_utc(as_of or utc_now()), ends_at)
+        if ends_at <= starts_at:
+            raise ValueError("Subscription period end must follow its start.")
+        async with self.sessions() as session:
+            subscription = await session.scalar(
+                select(Subscription).where(
+                    Subscription.organization_id == organization_id
+                )
+            )
+            if subscription is None:
+                raise ControlPlaneError("Organization subscription not found.")
+            rows = ()
+            if measured_at > starts_at:
+                rows = (
+                    await session.execute(
+                        select(
+                            VideoStreamRequest.started_at,
+                            VideoStreamRequest.stopped_at,
+                        ).where(
+                            VideoStreamRequest.organization_id == organization_id,
+                            VideoStreamRequest.started_at.is_not(None),
+                            VideoStreamRequest.started_at < measured_at,
+                            or_(
+                                VideoStreamRequest.stopped_at.is_(None),
+                                VideoStreamRequest.stopped_at > starts_at,
+                            ),
+                        )
+                    )
+                ).all()
+        used_seconds = 0
+        for request_starts_at, request_stops_at in rows:
+            overlap_start = max(as_utc(request_starts_at), starts_at)
+            overlap_end = min(
+                as_utc(request_stops_at) if request_stops_at else measured_at,
+                measured_at,
+            )
+            if overlap_end > overlap_start:
+                used_seconds += int((overlap_end - overlap_start).total_seconds())
+        return StreamingUtilizationRecord(
+            period_starts_at=starts_at,
+            period_ends_at=ends_at,
+            used_seconds=used_seconds,
+            allowance_hours=(
+                Decimal(subscription.video_allowance_hours)
+                if subscription.video_allowance_hours is not None
+                else None
+            ),
+        )
+
+    async def synchronize_paid_subscription(
+        self,
+        *,
+        organization_id: str,
+        plan_code: str,
+        state: str,
+        billing_interval: str,
+        collection_method: str,
+        payment_provider: str,
+        external_customer_id: str,
+        external_subscription_id: str,
+        external_price_id: str,
+        provider_snapshot_at: datetime,
+        trial_starts_at: Optional[datetime] = None,
+        trial_ends_at: Optional[datetime] = None,
+        current_period_starts_at: Optional[datetime] = None,
+        current_period_ends_at: Optional[datetime] = None,
+        cancel_at_period_end: bool = False,
+        video_allowance_hours: Optional[Decimal] = None,
+        now: Optional[datetime] = None,
+    ) -> SubscriptionRecord:
+        """Store an authoritative provider snapshot without granting access.
+
+        A later payment adapter is responsible for authenticating its webhook,
+        claiming the provider event idempotently, and retrieving the current
+        subscription object before calling this method.  Operational access is
+        deliberately left to a separate entitlement policy so delayed or
+        out-of-order billing events cannot interrupt an active incident.
+        """
+        normalized_plan = plan_code.strip().lower()
+        normalized_state = state.strip().lower()
+        normalized_interval = billing_interval.strip().lower()
+        normalized_collection = collection_method.strip().lower()
+        normalized_provider = payment_provider.strip().lower()
+        if normalized_plan not in SUBSCRIPTION_PLAN_BY_CODE:
+            raise ValueError("Unknown subscription plan.")
+        if normalized_state not in PAID_SUBSCRIPTION_STATES:
+            raise ValueError("Unsupported paid subscription state.")
+        if normalized_interval not in SUBSCRIPTION_BILLING_INTERVALS:
+            raise ValueError("Unsupported subscription billing interval.")
+        if normalized_collection not in SUBSCRIPTION_COLLECTION_METHODS:
+            raise ValueError("Unsupported subscription collection method.")
+        external_values = (
+            normalized_provider,
+            external_customer_id.strip(),
+            external_subscription_id.strip(),
+            external_price_id.strip(),
+        )
+        if not all(external_values):
+            raise ValueError("Payment provider and external identifiers are required.")
+        if any(len(value) > limit for value, limit in zip(
+            external_values,
+            (48, 160, 160, 160),
+        )):
+            raise ValueError("Payment provider metadata is too long.")
+        normalized_allowance = (
+            Decimal(video_allowance_hours)
+            if video_allowance_hours is not None
+            else None
+        )
+        if normalized_allowance is not None and normalized_allowance <= 0:
+            raise ValueError("Video allowance hours must be positive.")
+
+        observed_at = as_utc(provider_snapshot_at)
+        changed_at = as_utc(now or utc_now())
+        async with self.sessions() as session:
+            organization = await session.get(Organization, organization_id)
+            subscription = await session.scalar(
+                select(Subscription)
+                .where(Subscription.organization_id == organization_id)
+                .with_for_update()
+            )
+            if organization is None or subscription is None:
+                raise ControlPlaneError("Organization subscription not found.")
+            previous_snapshot_at = as_utc(subscription.provider_snapshot_at)
+            if previous_snapshot_at is not None and observed_at < previous_snapshot_at:
+                return self._subscription_record(subscription)
+            if (
+                subscription.payment_provider
+                and subscription.payment_provider != normalized_provider
+            ):
+                raise ControlPlaneError(
+                    "Subscription is already linked to another payment provider."
+                )
+
+            subscription.plan_code = normalized_plan
+            subscription.state = normalized_state
+            subscription.billing_interval = normalized_interval
+            subscription.billing_cadence = normalized_interval
+            subscription.collection_method = normalized_collection
+            subscription.payment_provider = normalized_provider
+            subscription.external_customer_id = external_values[1]
+            subscription.external_subscription_id = external_values[2]
+            subscription.external_price_id = external_values[3]
+            subscription.trial_starts_at = as_utc(trial_starts_at)
+            subscription.trial_ends_at = as_utc(trial_ends_at)
+            subscription.current_period_starts_at = as_utc(
+                current_period_starts_at
+            )
+            subscription.current_period_ends_at = as_utc(current_period_ends_at)
+            subscription.cancel_at_period_end = bool(cancel_at_period_end)
+            subscription.provider_snapshot_at = observed_at
+            subscription.video_allowance_hours = normalized_allowance
+            subscription.updated_at = changed_at
+            session.add(ControlPlaneAuditEvent(
+                organization_id=organization_id,
+                actor_type="billing_provider",
+                actor_id=normalized_provider,
+                event_type="billing.subscription_synchronized",
+                details_json=json.dumps({
+                    "billing_interval": normalized_interval,
+                    "cancel_at_period_end": bool(cancel_at_period_end),
+                    "plan_code": normalized_plan,
+                    "state": normalized_state,
+                }, sort_keys=True),
+                created_at=changed_at,
+            ))
+            await session.commit()
+            return self._subscription_record(subscription)
 
     async def get_organization_by_hostname(
         self,
@@ -4738,6 +5118,15 @@ class ControlPlaneStore:
                 Subscription.organization_id == organization.id
             )
         )
+        if (
+            subscription is not None
+            and subscription.plan_code in SUBSCRIPTION_PLAN_BY_CODE
+        ):
+            # The legacy ledger and provider-cost meters remain useful for
+            # internal reconciliation, but they are not paid-plan entitlement
+            # inputs. Never let recording either one erase a provider snapshot.
+            organization.updated_at = changed_at
+            return
         organization.lifecycle_state = "extended_beta"
         organization.billing_mode = "extended beta"
         organization.trial_starts_at = None
@@ -4746,6 +5135,8 @@ class ControlPlaneStore:
             subscription.state = "extended_beta"
             subscription.collection_method = "none"
             subscription.billing_cadence = "calendar month allowance"
+            subscription.plan_code = "extended_beta"
+            subscription.billing_interval = "none"
             subscription.trial_starts_at = None
             subscription.trial_ends_at = None
             subscription.updated_at = changed_at

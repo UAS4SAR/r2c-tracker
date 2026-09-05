@@ -246,10 +246,11 @@
     reportMetrics(true, false, event, detail).catch(function () {});
   }
 
-  async function reportEnded(message) {
+  async function reportEnded(message, kind = "ended") {
     if (endedReported) return;
-    await reportMetrics(true, false).catch(function () {});
     endedReported = true;
+    state.dataset.controllerActive = "false";
+    await reportMetrics(true, false).catch(function () {});
     window.clearInterval(statsTimer);
     statsTimer = null;
     window.clearInterval(serverStateTimer);
@@ -264,7 +265,7 @@
     video.srcObject = null;
     audio.srcObject = null;
     video.style.display = "none";
-    show(message, "ended");
+    show(message, kind);
     peer.close();
     await fetch(`${base}/ended`, {
       method: "POST",
@@ -277,8 +278,9 @@
 
   async function endFromServer(message) {
     if (endedReported) return;
-    await reportMetrics(true, false).catch(function () {});
     endedReported = true;
+    state.dataset.controllerActive = "false";
+    await reportMetrics(true, false).catch(function () {});
     window.clearInterval(statsTimer);
     statsTimer = null;
     window.clearInterval(serverStateTimer);
@@ -574,8 +576,13 @@
     peer.close();
   });
   start().catch(function (error) {
-    reportDiagnostic("media_start_failed", error?.message || String(error || ""));
-    show(error.message || "The video connection failed.", "error");
-    peer.close();
+    const message = error?.message || "The video connection failed.";
+    reportDiagnostic("media_start_failed", message);
+    reportEnded(message, "error").catch(function () {
+      state.dataset.controllerActive = "false";
+      show(message, "error");
+      peer.close();
+      reloadAfterTerminal(1500);
+    });
   });
 })();

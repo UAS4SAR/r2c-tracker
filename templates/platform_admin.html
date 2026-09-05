@@ -598,6 +598,48 @@
   <section class="platform-panel">
     <div class="panel-heading">
       <div>
+        <h2>Subscription model preparation</h2>
+        <p>
+          Internal planning catalog only. Checkout, payment collection, paid
+          entitlement enforcement, and automatic overages remain disabled.
+        </p>
+      </div>
+    </div>
+    <div class="prototype-banner" role="note">
+      Proposed trial: {{ subscription_trial_days }} days. Annual prepayment:
+      {{ subscription_annual_discount_percent }}% below twelve monthly payments.
+      Final video-hour quantities remain intentionally unset pending measured
+      usage and capacity testing.
+    </div>
+    <div class="organization-table-scroll" tabindex="0">
+      <table class="organization-table">
+        <thead>
+          <tr>
+            <th>Plan</th>
+            <th>Monthly</th>
+            <th>Annual</th>
+            <th>Video capacity</th>
+            <th>Positioning</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for plan in subscription_plans %}
+          <tr>
+            <td><div class="org-name">{{ plan.name }}</div><div class="secondary-text"><code>{{ plan.code }}</code></div></td>
+            <td>{% if plan.monthly_price is not none %}${{ "%.2f"|format(plan.monthly_price) }}{% else %}Custom{% endif %}</td>
+            <td>{% if plan.annual_price is not none %}${{ "%.2f"|format(plan.annual_price) }}{% else %}Custom{% endif %}</td>
+            <td>{% if plan.video_allowance_multiplier is not none %}{{ plan.video_allowance_multiplier }}× base allowance{% else %}Custom{% endif %}</td>
+            <td>{{ plan.description }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="platform-panel">
+    <div class="panel-heading">
+      <div>
         <h2>Managed pilot requests</h2>
         <p>Contact information submitted through rid2caltopo.org.</p>
       </div>
@@ -801,6 +843,17 @@
             </td>
             <td>
               <div>{{ organization.billing_mode }}</div>
+              {% if organization.subscription_plan_code != "extended_beta" %}
+              <div class="secondary-text">
+                {{ organization.subscription_plan_code|replace('_', ' ') }} ·
+                {{ organization.subscription_billing_interval }}
+              </div>
+              {% if organization.subscription_period_ends_at %}
+              <div class="secondary-text">
+                Period ends {{ organization.subscription_period_ends_at.strftime("%d %b %Y") }}
+              </div>
+              {% endif %}
+              {% endif %}
             </td>
             <td>
               <div class="cost-total">$20.00</div>

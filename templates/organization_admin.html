@@ -518,12 +518,20 @@
       <h2>Service status</h2>
       <p><strong>Account:</strong> {{ organization.lifecycle_state|replace('_', ' ') }}</p>
       <p><strong>Provisioning:</strong> {{ organization.provisioning_state }}</p>
-      <p><strong>Billing:</strong> {{ organization.billing_mode }}</p>
+      <p>
+        <strong>Plan:</strong>
+        {{ organization.subscription_plan_code|replace('_', ' ') }}
+        {% if organization.subscription_billing_interval != "none" %}
+        · {{ organization.subscription_billing_interval }}
+        {% endif %}
+      </p>
+      {% if organization.subscription_plan_code == "extended_beta" %}
       <p>
         R2C Tracker is operating as an open-ended extended beta. The platform
-        does not accept payments. Each organization receives a platform-funded
-        $20.00 calendar-month usage allowance.
+        does not accept payments. Remote-video capacity is platform-funded
+        during beta testing.
       </p>
+      {% endif %}
       <p>
         Command staff with the <code>video_requester</code> role may request a
         stream, but pilot approval is always required.
@@ -537,51 +545,37 @@
       </p>
       {% endif %}
       {% if "organization_owner" in organization_user.roles or "billing_admin" in organization_user.roles %}
-      <h3>Month-to-date platform cost</h3>
-      {% if beta_allowance %}
+      <h3>Streaming utilization</h3>
+      {% if streaming_utilization %}
       <p>
-        <strong>${{ "%.2f"|format(beta_allowance.actual_cost) }}</strong> of the
-        ${{ "%.2f"|format(beta_allowance.allowance_amount) }} extended-beta
-        allowance is currently allocated to this organization.
+        <strong>{{ "%.2f"|format(streaming_utilization.used_hours) }} viewer-hours</strong>
+        {{ streaming_utilization_label }}.
       </p>
-      {% if not beta_allowance.video_streaming_allowed %}
+      {% if streaming_utilization.allowance_hours is not none %}
+      <p>
+        Estimated remaining capacity:
+        <strong>{{ "%.2f"|format(streaming_utilization.remaining_hours) }} viewer-hours</strong>
+        of {{ "%.2f"|format(streaming_utilization.allowance_hours) }} included
+        for this subscription period.
+      </p>
+      {% else %}
+      <p>
+        The subscription video-hour allowance has not yet been assigned, so an
+        estimate of remaining hours is not available.
+      </p>
+      {% endif %}
+      <p>
+        Current period:
+        <time class="local-datetime" data-utc="{{ streaming_utilization.period_starts_at.isoformat() }}">{{ streaming_utilization.period_starts_at.strftime("%d %b %Y") }}</time>
+        through
+        <time class="local-datetime" data-utc="{{ streaming_utilization.period_ends_at.isoformat() }}">{{ streaming_utilization.period_ends_at.strftime("%d %b %Y") }}</time>.
+      </p>
+      {% endif %}
+      {% if beta_allowance and not beta_allowance.video_streaming_allowed %}
       <p class="alert alert-warning">
         Remote video streaming is disabled through
         {{ beta_allowance.month_ends_at.strftime("%d %b %Y") }}. Flight logs and
         R2C-based drone-owner arbitration remain available.
-      </p>
-      {% endif %}
-      {% endif %}
-      {% if organization_cost %}
-      <p>
-        <strong class="organization-cost-total">${{ "%.2f"|format(organization_cost.total) }}</strong>
-        allocated to {{ organization.designator }} for
-        {{ billing_snapshot.billing_period }}.
-      </p>
-      <div style="overflow-x:auto">
-        <table class="org-table organization-cost-breakdown">
-          <thead>
-            <tr><th>Category</th><th>Allocated cost</th></tr>
-          </thead>
-          <tbody>
-            <tr><td>Compute</td><td>${{ "%.2f"|format(organization_cost.compute) }}</td></tr>
-            <tr><td>Network / TURN</td><td>${{ "%.2f"|format(organization_cost.network) }}</td></tr>
-            <tr><td>Storage</td><td>${{ "%.2f"|format(organization_cost.storage) }}</td></tr>
-            <tr><td>Database</td><td>${{ "%.2f"|format(organization_cost.database) }}</td></tr>
-            <tr><td>Shared / unmetered</td><td>${{ "%.2f"|format(organization_cost.other) }}</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <p>
-        Google Cloud billing data through
-        <time class="local-datetime" data-utc="{{ billing_snapshot.billing_data_through.isoformat() }}">{{ billing_snapshot.billing_data_through.strftime("%d %b %Y %H:%M UTC") }}</time>.
-        This allocation measures consumption of the extended-beta allowance;
-        it is not a bill or charge.
-      </p>
-      {% elif billing_snapshot %}
-      <p>
-        Current platform-cost allocation is unavailable.
-        {{ billing_snapshot.source_message }}
       </p>
       {% endif %}
       <h3>Historical account activity</h3>

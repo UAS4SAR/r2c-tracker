@@ -54,6 +54,9 @@ class OrganizationBillingSummary:
     primary_admin_postal_address: str = ""
     primary_admin_phone: str = ""
     aggregate_usage: AggregateUsage = AggregateUsage()
+    subscription_plan_code: str = "extended_beta"
+    subscription_billing_interval: str = "none"
+    subscription_period_ends_at: Optional[datetime] = None
 
 
 @dataclass(frozen=True)

@@ -12,10 +12,13 @@
   // active controller because the tablet's advertised stream set changes can
   // destroy an otherwise healthy WebRTC session (for example, during a brief
   // decoder/UI transition on the tablet).
-  const requestControllerActive = Boolean(
-    document.getElementById("video-preflight") ||
-    document.getElementById("video-media")
-  );
+  function requestControllerActive() {
+    if (document.getElementById("video-preflight")) return true;
+    const mediaController = document.getElementById("video-media");
+    return Boolean(
+      mediaController && mediaController.dataset.controllerActive !== "false"
+    );
+  }
   const renderedMembershipRevision = state.dataset.membershipRevision || "";
   let renderedInProgressSessionIds = [];
   try {
@@ -110,7 +113,7 @@
     });
     if (!response.ok) throw new Error(`Stream status ${response.status}`);
     const status = await response.json();
-    if (!requestControllerActive &&
+    if (!requestControllerActive() &&
         status.membershipRevision !== renderedMembershipRevision) {
       reloadForMembershipChange();
       return;
@@ -118,7 +121,7 @@
     const currentInProgressSessionIds = (status.inProgressSessionIds || [])
       .map(String)
       .sort();
-    if (!requestControllerActive &&
+    if (!requestControllerActive() &&
         JSON.stringify(currentInProgressSessionIds) !==
         JSON.stringify(renderedInProgressSessionIds)) {
       reloadForMembershipChange();

@@ -1,3 +1,10 @@
+v1.4.84:
+* Add a dormant provider-neutral subscription catalog with a 45-day trial, $25, $50, and $100 monthly planning tiers, a 10% annual-payment discount, and a custom regional or enterprise tier; payments and paid-tier enforcement remain disabled.
+* Replace infrastructure-cost detail in organization management with monthly or annual viewer-hour utilization and an estimated remaining allowance when an absolute allowance has been assigned.
+* Keep cloud-cost allocation visible only to platform administrators for internal reconciliation and margin planning.
+* Release failed remote-video startup requests immediately so recordings no longer remain marked Video in use after the browser times out, and refresh the page after the failed controller becomes terminal.
+* Use the UAS4SAR administrator identity in current deployment guidance and local pilot setup defaults.
+
 v1.4.83: deployed
 * Assign each compatible authenticated organization tablet a guaranteed-unique member-and-device-model name and return it to RID2Caltopo for consistent app, CalTopo marker, and Tracker identity.
 * Preserve the existing name for older organization app versions that do not report a hardware model and direct operators to upgrade instead of guessing; leave standalone device naming unchanged.

@@ -152,6 +152,34 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 class OrganizationRouteFlowTest(unittest.TestCase):
+    def test_subscription_utilization_windows_follow_billing_interval(self):
+        now = datetime(2026, 9, 4, 18, 30, tzinfo=UTC)
+        monthly = SimpleNamespace(
+            billing_interval="monthly",
+            current_period_starts_at=None,
+            current_period_ends_at=None,
+        )
+        self.assertEqual(
+            (
+                datetime(2026, 9, 1, tzinfo=UTC),
+                datetime(2026, 10, 1, tzinfo=UTC),
+                "month to date",
+            ),
+            main.subscription_utilization_window(monthly, now),
+        )
+
+        annual_start = datetime(2026, 4, 15, tzinfo=UTC)
+        annual_end = datetime(2027, 4, 15, tzinfo=UTC)
+        annual = SimpleNamespace(
+            billing_interval="annual",
+            current_period_starts_at=annual_start,
+            current_period_ends_at=annual_end,
+        )
+        self.assertEqual(
+            (annual_start, annual_end, "year to date"),
+            main.subscription_utilization_window(annual, now),
+        )
+
     def test_deployment_fixture_is_staging_only_and_gate_protected(self):
         production = self.client.post("/deployment-test-fixture")
         self.assertEqual(404, production.status_code)
@@ -299,7 +327,7 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         preflight_script = Path("static/video_preflight.js").read_text()
 
         self.assertIn("function reloadForMembershipChange()", live_script)
-        self.assertIn("requestControllerActive", live_script)
+        self.assertIn("function requestControllerActive()", live_script)
         self.assertIn('document.getElementById("video-preflight")', live_script)
         self.assertIn('document.getElementById("video-media")', live_script)
         self.assertEqual(1, live_script.count("window.location.reload()"))
@@ -308,6 +336,20 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertIn("remote-control/approve", preflight_script)
         self.assertIn('["approved", "streaming"]', preflight_script)
         self.assertEqual(2, preflight_script.count("window.location.reload()"))
+
+    def test_failed_media_controller_releases_request_and_allows_page_refresh(self):
+        live_script = Path("static/organization_streams_live.js").read_text()
+        media_script = Path("static/video_media.js").read_text()
+        template = Path("templates/organization_streams.html").read_text()
+
+        self.assertIn('data-controller-active="true"', template)
+        self.assertIn('state.dataset.controllerActive = "false"', media_script)
+        self.assertIn('reportEnded(message, "error")', media_script)
+        self.assertIn(
+            'mediaController.dataset.controllerActive !== "false"',
+            live_script,
+        )
+        self.assertIn("if (!requestControllerActive() &&", live_script)
 
     def test_stream_refresh_reloads_when_request_in_progress_state_clears(self):
         live_script = Path("static/organization_streams_live.js").read_text()
@@ -462,7 +504,7 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             'reportDiagnostic("video_play_rejected"',
         ):
             self.assertIn(diagnostic, script)
-        self.assertIn("video_media.js?v=20260829-1", template)
+        self.assertIn("video_media.js?v=20260904-1", template)
 
     def test_media_offer_posts_on_first_relay_candidate(self):
         script = Path("static/video_media.js").read_text()
@@ -1131,29 +1173,25 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         directory_script = self.client.get("/static/organization_directory.js")
         self.assertEqual(200, directory_script.status_code)
         self.assertIn("picker.showModal()", directory_script.text)
-        billing_snapshot = SimpleNamespace(
-            source_status="ready",
-            source_message="Live billing data.",
-            billing_period="2026-08",
-            billing_data_through=datetime(2026, 8, 10, 12, 0),
-            actual_cost_breakdown_mtd=main.CostBreakdown(
-                compute=Decimal("0.08"),
-                storage=Decimal("0.25"),
-                database=Decimal("1.07"),
-            ),
-        )
         with patch.object(
             main,
             "load_platform_billing_snapshot",
-            return_value=billing_snapshot,
+            side_effect=AssertionError(
+                "organization management must not load infrastructure costs"
+            ),
         ):
             billing_report = self.client.get("/ncssar/admin")
-        self.assertIn("Month-to-date platform cost", billing_report.text)
-        self.assertIn(">$1.40<", billing_report.text)
-        self.assertIn("<td>Compute</td><td>$0.08</td>", billing_report.text)
-        self.assertIn("<td>Storage</td><td>$0.25</td>", billing_report.text)
-        self.assertIn("<td>Database</td><td>$1.07</td>", billing_report.text)
-        self.assertIn("not a bill or charge", billing_report.text)
+        self.assertIn("Streaming utilization", billing_report.text)
+        self.assertIn("0.00 viewer-hours", billing_report.text)
+        self.assertIn("month to date", billing_report.text)
+        self.assertIn(
+            "estimate of remaining hours is not available",
+            billing_report.text,
+        )
+        self.assertNotIn("Month-to-date platform cost", billing_report.text)
+        self.assertNotIn("organization-cost-total", billing_report.text)
+        self.assertNotIn("organization-cost-breakdown", billing_report.text)
+        self.assertNotIn("Google Cloud billing data", billing_report.text)
         self.assertIn("does not accept payments", billing_report.text)
         self.assertNotIn("Continue to Stripe", billing_report.text)
         self.assertIn("timeZoneName: 'short'", billing_report.text)
@@ -2062,7 +2100,9 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertEqual(200, activated.status_code)
         self.assertIn("NCSSAR administration", activated.text)
         self.assertIn("open-ended extended beta", activated.text)
-        self.assertIn("$20.00", activated.text)
+        self.assertIn("Remote-video capacity is platform-funded", activated.text)
+        self.assertIn("Streaming utilization", activated.text)
+        self.assertNotIn("$20.00", activated.text)
         self.assertIn("does not accept payments", activated.text)
 
         campaign_created = self.client.post(

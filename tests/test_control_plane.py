@@ -10,6 +10,7 @@ from unittest.mock import patch
 from sqlalchemy import text
 
 from control_plane import (
+    ActiveVideoStream,
     AUDIT_EVENT_HOT_DAYS,
     AUDIT_EVENT_RETENTION_DAYS,
     ControlPlaneAuditEvent,
@@ -23,7 +24,9 @@ from control_plane import (
     MANAGED_ACCESS_TERMS_TEXT,
     MANAGED_ACCESS_TERMS_VERSION,
     OrganizationUser,
+    Subscription,
     UsageDaily,
+    VideoStreamRequest,
     hash_password,
     is_emergency_video_fallback,
     managed_video_quality_choices,
@@ -83,6 +86,264 @@ class ControlPlaneStoreTest(unittest.TestCase):
         self.assertTrue(all(step["state"] == "simulated" for step in jobs[0].steps))
         audit_events = asyncio.run(self.store.list_audit_events())
         self.assertEqual("organization.created", audit_events[0].event_type)
+
+        subscription = asyncio.run(self.store.get_subscription(organization.id))
+        self.assertEqual("extended_beta", subscription.plan_code)
+        self.assertEqual("none", subscription.billing_interval)
+        self.assertEqual("extended_beta", subscription.state)
+
+    def test_paid_subscription_snapshot_is_provider_neutral_and_restart_safe(self):
+        organization = self.create_organization()
+        snapshot_at = self.now + timedelta(days=1)
+        period_end = self.now + timedelta(days=31)
+
+        synchronized = asyncio.run(self.store.synchronize_paid_subscription(
+            organization_id=organization.id,
+            plan_code="operations",
+            state="active",
+            billing_interval="monthly",
+            collection_method="automatic",
+            payment_provider="stripe",
+            external_customer_id="cus_test_123",
+            external_subscription_id="sub_test_123",
+            external_price_id="price_test_operations_monthly",
+            provider_snapshot_at=snapshot_at,
+            current_period_starts_at=self.now,
+            current_period_ends_at=period_end,
+            video_allowance_hours=Decimal("150"),
+            now=snapshot_at,
+        ))
+
+        self.assertEqual("operations", synchronized.plan_code)
+        self.assertEqual("stripe", synchronized.payment_provider)
+        self.assertEqual(period_end, synchronized.current_period_ends_at)
+        self.assertEqual(Decimal("150"), synchronized.video_allowance_hours)
+        self.assertFalse(synchronized.cancel_at_period_end)
+
+        # Re-running startup migrations must not convert a future paid record
+        # back to the current extended-beta state.
+        asyncio.run(self.store.init())
+        after_restart = asyncio.run(self.store.get_subscription(organization.id))
+        self.assertEqual("active", after_restart.state)
+        self.assertEqual("operations", after_restart.plan_code)
+
+        # Internal provider-cost reconciliation is deliberately separate from
+        # customer plan state and must not erase the paid snapshot.
+        asyncio.run(self.store.record_daily_usage(
+            organization_id=organization.id,
+            usage_date="2026-07-31",
+            network_cost=Decimal("1.25"),
+            now=snapshot_at + timedelta(minutes=1),
+        ))
+        after_cost_recording = asyncio.run(
+            self.store.get_subscription(organization.id)
+        )
+        self.assertEqual("active", after_cost_recording.state)
+        self.assertEqual("operations", after_cost_recording.plan_code)
+
+        audit = asyncio.run(self.store.search_audit_events(
+            event_type="billing.subscription_synchronized",
+        )).events[0]
+        self.assertEqual("operations", audit.details["plan_code"])
+        self.assertNotIn("cus_test_123", repr(audit.details))
+        self.assertNotIn("sub_test_123", repr(audit.details))
+
+    def test_older_paid_subscription_snapshot_cannot_overwrite_newer_state(self):
+        organization = self.create_organization()
+        newer = self.now + timedelta(hours=2)
+        common = {
+            "organization_id": organization.id,
+            "billing_interval": "annual",
+            "collection_method": "invoice",
+            "payment_provider": "stripe",
+            "external_customer_id": "cus_test_123",
+            "external_subscription_id": "sub_test_123",
+            "external_price_id": "price_test_command_annual",
+        }
+        asyncio.run(self.store.synchronize_paid_subscription(
+            **common,
+            plan_code="command",
+            state="active",
+            provider_snapshot_at=newer,
+            now=newer,
+        ))
+        stale = asyncio.run(self.store.synchronize_paid_subscription(
+            **common,
+            plan_code="team",
+            state="canceled",
+            provider_snapshot_at=self.now,
+            now=newer + timedelta(minutes=1),
+        ))
+
+        self.assertEqual("command", stale.plan_code)
+        self.assertEqual("active", stale.state)
+        events = asyncio.run(self.store.search_audit_events(
+            event_type="billing.subscription_synchronized",
+        )).events
+        self.assertEqual(1, len(events))
+
+    def test_paid_subscription_cannot_switch_provider_implicitly(self):
+        organization = self.create_organization()
+        values = {
+            "organization_id": organization.id,
+            "plan_code": "team",
+            "state": "active",
+            "billing_interval": "monthly",
+            "collection_method": "automatic",
+            "external_customer_id": "customer-1",
+            "external_subscription_id": "subscription-1",
+            "external_price_id": "price-1",
+        }
+        asyncio.run(self.store.synchronize_paid_subscription(
+            **values,
+            payment_provider="stripe",
+            provider_snapshot_at=self.now,
+        ))
+        with self.assertRaisesRegex(
+            ControlPlaneError,
+            "already linked to another payment provider",
+        ):
+            asyncio.run(self.store.synchronize_paid_subscription(
+                **values,
+                payment_provider="different-provider",
+                provider_snapshot_at=self.now + timedelta(seconds=1),
+            ))
+
+    def test_subscription_schema_migrates_provider_neutral_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "legacy-subscriptions.db"
+            connection = sqlite3.connect(database_path)
+            connection.execute("""
+                CREATE TABLE subscriptions (
+                    id VARCHAR(36) PRIMARY KEY,
+                    organization_id VARCHAR(36) UNIQUE,
+                    state VARCHAR(24),
+                    collection_method VARCHAR(32),
+                    billing_cadence VARCHAR(24),
+                    external_customer_id VARCHAR(160),
+                    external_subscription_id VARCHAR(160),
+                    trial_starts_at DATETIME,
+                    trial_ends_at DATETIME,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+            """)
+            connection.commit()
+            connection.close()
+            store = ControlPlaneStore(
+                f"sqlite+aiosqlite:///{database_path}"
+            )
+            asyncio.run(store.init())
+            connection = sqlite3.connect(database_path)
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(subscriptions)")
+            }
+            connection.close()
+            asyncio.run(store.dispose())
+
+        self.assertTrue({
+            "plan_code",
+            "billing_interval",
+            "payment_provider",
+            "external_price_id",
+            "current_period_starts_at",
+            "current_period_ends_at",
+            "cancel_at_period_end",
+            "provider_snapshot_at",
+            "video_allowance_hours",
+        }.issubset(columns))
+
+    def test_streaming_utilization_counts_overlapping_viewer_hours(self):
+        organization = self.create_organization()
+        period_start = self.now
+        period_end = self.now + timedelta(days=30)
+        invitation = asyncio.run(self.store.get_invitation(
+            organization.designator,
+            organization.primary_admin_email,
+        ))
+        owner = asyncio.run(self.store.activate_owner(
+            organization.designator,
+            organization.primary_admin_email,
+            "correct horse battery staple",
+            self.now,
+            activation_nonce=invitation.activation_nonce,
+        ))
+        campaign = asyncio.run(self.store.create_enrollment_campaign(
+            organization_id=organization.id,
+            label="Utilization test",
+            created_by_user_id=owner.id,
+            expires_in_hours=24,
+            max_redemptions=1,
+            now=self.now,
+        ))
+        device = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="Tablet",
+            platform="android",
+            installation_id="utilization-installation",
+            authorized_user_id=owner.id,
+            now=self.now,
+        ))
+
+        async def add_requests():
+            async with self.store.sessions() as session:
+                stream = ActiveVideoStream(
+                    id="stream-utilization",
+                    session_id="session-utilization",
+                    organization_id=organization.id,
+                    device_credential_id=device.id,
+                    device_name="Tablet",
+                    incident_name="Training",
+                    drone_designator="10A",
+                    state="inactive",
+                    created_at=period_start,
+                    last_seen_at=period_start,
+                    expires_at=period_end,
+                )
+                session.add(stream)
+                session.add_all((
+                    VideoStreamRequest(
+                        id="request-before-period",
+                        organization_id=organization.id,
+                        active_stream_id=stream.id,
+                        requester_user_id=owner.id,
+                        requester_email="viewer1@example.test",
+                        state="stopped",
+                        requested_at=period_start - timedelta(hours=1),
+                        expires_at=period_end,
+                        started_at=period_start - timedelta(minutes=30),
+                        stopped_at=period_start + timedelta(minutes=30),
+                    ),
+                    VideoStreamRequest(
+                        id="request-inside-period",
+                        organization_id=organization.id,
+                        active_stream_id=stream.id,
+                        requester_user_id=owner.id,
+                        requester_email="viewer2@example.test",
+                        state="streaming",
+                        requested_at=period_start + timedelta(hours=1),
+                        expires_at=period_end,
+                        started_at=period_start + timedelta(hours=1),
+                        stopped_at=None,
+                    ),
+                ))
+                await session.commit()
+
+        asyncio.run(add_requests())
+        utilization = asyncio.run(self.store.streaming_utilization(
+            organization_id=organization.id,
+            period_starts_at=period_start,
+            period_ends_at=period_end,
+            as_of=period_start + timedelta(hours=2, minutes=30),
+        ))
+
+        # Thirty minutes from the request crossing the period boundary plus
+        # ninety minutes from the active viewer request.
+        self.assertEqual(2 * 60 * 60, utilization.used_seconds)
+        self.assertEqual(Decimal("2.00"), utilization.used_hours)
+        self.assertIsNone(utilization.remaining_hours)
 
     def test_operational_member_name_uses_only_needed_disambiguation(self):
         self.assertEqual(

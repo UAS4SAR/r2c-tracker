@@ -639,7 +639,7 @@
      data-membership-revision="{{ stream_membership_revision }}"
      data-in-progress-session-ids="{{ request_in_progress_session_ids | list | sort | tojson | forceescape }}"
      data-status-url="/{{ organization.designator|lower }}/streams/live-status"></div>
-<script src="/static/organization_streams_live.js?v=20260902-1" defer></script>
+<script src="/static/organization_streams_live.js?v=20260904-1" defer></script>
 {% if recording_downloads_enabled %}
 {% for recording_download in recording_downloads_by_session.values() %}
 {% if recording_download.state in ("awaiting_approval", "approved", "uploading") %}
@@ -659,7 +659,8 @@
      data-request-id="{{ active_media_request_id }}"
      data-designator="{{ organization.designator|lower }}"
      data-form-token="{{ csrf_token }}"
+     data-controller-active="true"
      data-ice-servers='{{ video_ice_servers|tojson }}'></div>
-<script src="/static/video_media.js?v=20260829-1" defer></script>
+<script src="/static/video_media.js?v=20260904-1" defer></script>
 {% endif %}
 {% endblock %}
