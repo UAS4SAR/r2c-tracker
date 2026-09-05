@@ -1,3 +1,9 @@
+v1.4.86:
+* Let organization administrators distinguish replacement tablet authorizations with an organization-scoped device-identity fingerprint, a live Currently connected marker, and an audited Retire authorization action that leaves the replacement usable.
+* Replace relay-price language on organization and tablet Streams pages with month-to-date or year-to-date viewer-hours and estimated remaining subscription capacity when an allowance is configured.
+* Release failed or ended browser video sessions without waiting on terminal telemetry, preventing recordings from remaining marked Video in use after playback stops or fails.
+* Replace passive browser stream WebSockets with bounded, focus-aware status checks, retain tablet silence retirement, and explicitly configure Cloud Run to scale to zero with CPU throttling after activity becomes idle.
+
 v1.4.85: deployed
 * Add a dormant provider-neutral subscription catalog with a 45-day trial, $25, $50, and $100 monthly planning tiers, a 10% annual-payment discount, and a custom regional or enterprise tier; payments and paid-tier enforcement remain disabled.
 * Replace infrastructure-cost detail in organization management with monthly or annual viewer-hour utilization and an estimated remaining allowance when an absolute allowance has been assigned.

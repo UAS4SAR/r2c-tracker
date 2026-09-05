@@ -30,6 +30,8 @@ class GuardedReleaseTest(unittest.TestCase):
         self.assertIn("DEPLOYMENT_GATE_KEY=${DEPLOYMENT_GATE_KEY_SECRET_NAME}:latest", deploy)
         self.assertIn('--startup-probe "httpGet.path=/livez', deploy)
         self.assertIn('--liveness-probe "httpGet.path=/livez', deploy)
+        self.assertIn("--min 0", deploy)
+        self.assertIn("--cpu-throttling", deploy)
         self.assertIn("r2c-deployment-gate-key", pilot)
         self.assertIn('"FLIGHTLOGS_STORAGE_REQUIRED"', deploy)
         self.assertIn('FAST_UI_DEPLOY="${FAST_UI_DEPLOY:-0}"', deploy)

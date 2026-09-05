@@ -74,6 +74,9 @@ class DeployScriptTest(unittest.TestCase):
         )
         self.assertIn("r2c-super-admin-identity", script)
         self.assertIn("dynamic platform administrator identity", script)
+        self.assertIn("--min 0", script)
+        self.assertIn("--cpu-throttling", script)
+        self.assertIn('"R2C_CLIENT_SILENCE_SEC": os.environ.get("R2C_CLIENT_SILENCE_SEC", "60")', script)
         self.assertNotIn("PLATFORM_ADMIN_EMAIL", script)
         self.assertNotIn("PLATFORM_ADMIN_PASS", script)
         self.assertIn(

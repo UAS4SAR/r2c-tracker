@@ -59,7 +59,7 @@ class ReleaseCheckScriptTest(unittest.TestCase):
         main_source = (
             pathlib.Path(__file__).resolve().parents[1] / "main.py"
         ).read_text()
-        self.assertIn('client_message == "unsubscribe"', main_source)
+        self.assertIn('reason="bounded-status-refresh-required"', main_source)
 
         guard = (
             pathlib.Path(__file__).resolve().parents[1]

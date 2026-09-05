@@ -1670,6 +1670,61 @@ class ControlPlaneStoreTest(unittest.TestCase):
         issued_event = asyncio.run(self.store.list_audit_events())[0]
         self.assertEqual([first.id], issued_event.details["superseded_credential_ids"])
 
+    def test_administrator_can_retire_one_of_two_distinct_installations(self):
+        organization = self.create_organization()
+        owner = asyncio.run(self.store.activate_owner(
+            organization.designator,
+            organization.primary_admin_email,
+            "correct horse battery staple",
+            self.now,
+        ))
+        campaign = asyncio.run(self.store.create_enrollment_campaign(
+            organization_id=organization.id,
+            label="Replacement tablet",
+            created_by_user_id=owner.id,
+            expires_in_hours=24,
+            max_redemptions=2,
+            now=self.now,
+        ))
+        old = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="kjt S11U",
+            device_model="Samsung SM-X930",
+            platform="android",
+            installation_id="11111111-2222-3333-4444-555555555555",
+            authorized_user_id=owner.id,
+            now=self.now,
+        ))
+        replacement = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="kjt S11U",
+            device_model="Samsung SM-X930",
+            platform="android",
+            installation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            authorized_user_id=owner.id,
+            now=self.now + timedelta(minutes=1),
+        ))
+
+        retired = asyncio.run(self.store.retire_device_credential(
+            credential_id=old.id,
+            organization_id=organization.id,
+            actor_id=owner.id,
+            now=self.now + timedelta(minutes=2),
+        ))
+
+        self.assertEqual("revoked", retired.state)
+        self.assertIsNone(asyncio.run(self.store.authenticate_device_token(
+            old.token, self.now + timedelta(minutes=3)
+        )))
+        self.assertIsNotNone(asyncio.run(self.store.authenticate_device_token(
+            replacement.token, self.now + timedelta(minutes=3)
+        )))
+        event = asyncio.run(self.store.list_audit_events())[0]
+        self.assertEqual("device.credential_retired", event.event_type)
+        self.assertEqual(old.id, event.details["credential_id"])
+
     def test_reenrollment_supersedes_pending_member_authentication(self):
         organization = self.create_organization()
         owner = asyncio.run(self.store.activate_owner(

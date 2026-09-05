@@ -454,6 +454,9 @@ print(json.dumps({
     "R2C_UPDATE_URL": os.environ["R2C_UPDATE_URL"],
     "R2C_RECOMMENDED_IOS_APP_BUILD_NUMBER": os.environ["R2C_RECOMMENDED_IOS_APP_BUILD_NUMBER"],
     "R2C_IOS_UPDATE_URL": os.environ["R2C_IOS_UPDATE_URL"],
+    "R2C_HEARTBEAT_SEC": os.environ.get("R2C_HEARTBEAT_SEC", "15"),
+    "R2C_CLIENT_SILENCE_SEC": os.environ.get("R2C_CLIENT_SILENCE_SEC", "60"),
+    "R2C_IDLE_PARK_SEC": os.environ.get("R2C_IDLE_PARK_SEC", "30"),
     "FAA_NOTAM_API_BASE_URL": os.environ.get("FAA_NOTAM_API_BASE_URL", "https://api-nms.aim.faa.gov/nmsapi"),
     "FAA_NOTAM_TOKEN_URL": os.environ.get("FAA_NOTAM_TOKEN_URL", "https://api-nms.aim.faa.gov/v1/auth/token"),
     "FAA_PROXY_CACHE_TTL_SEC": os.environ.get("FAA_PROXY_CACHE_TTL_SEC", "90"),
@@ -559,7 +562,9 @@ set -- run deploy "${SERVICE_NAME}" \
   --project "${GCLOUD_PROJECT}" \
   --service-account "${RUNTIME_SERVICE_ACCOUNT}" \
   --timeout "${WEB_REQUEST_TIMEOUT}" \
+  --min 0 \
   --max-instances 1 \
+  --cpu-throttling \
   --startup-probe "httpGet.path=/livez,timeoutSeconds=5,periodSeconds=5,failureThreshold=24" \
   --liveness-probe "httpGet.path=/livez,initialDelaySeconds=10,timeoutSeconds=5,periodSeconds=30,failureThreshold=3" \
   --env-vars-file "${ENV_VARS_FILE}" \

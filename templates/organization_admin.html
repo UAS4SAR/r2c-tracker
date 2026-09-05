@@ -114,6 +114,16 @@
       color: #24576a;
       font-size: 0.76rem;
   }
+  .connection-chip {
+      display: inline-block;
+      margin-top: 5px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: #e5f5ec;
+      color: #17633a;
+      font-size: 0.76rem;
+      font-weight: 800;
+  }
   .role-help-wrap {
       position: relative;
       z-index: 1;
@@ -748,7 +758,13 @@
             <tr>
               <td>
                 <strong>{{ credential.device_name }}</strong><br>
-                <small>Enrollment {{ credential.id[:8] }} · Tracker compatibility {{ credential.functionality_release }}</small>
+                <small>Device identity {{ device_identity_fingerprints[credential.id] }} · Enrollment {{ credential.id[:8] }} · Tracker compatibility {{ credential.functionality_release }}</small>
+                {% if credential.id in connected_device_credential_ids %}
+                <br><span class="connection-chip">Currently connected</span>
+                {% endif %}
+                {% if credential.id in possible_replacement_credential_ids %}
+                <br><small><strong>Possible replacement:</strong> another authorization uses the same assigned member and device model.</small>
+                {% endif %}
               </td>
               <td>{{ credential.platform|capitalize }}</td>
               <td>
@@ -776,6 +792,13 @@
                 {% else %}
                 Re-enrollment required
                 {% endif %}
+                <form method="post"
+                      action="/{{ organization.designator|lower }}/device-credentials/{{ credential.id }}/retire"
+                      style="margin-top:8px"
+                      onsubmit="return confirm('Retire this tablet authorization? The tablet will need to enroll again if this is still the active device.');">
+                  <input type="hidden" name="form_token" value="{{ csrf_token }}">
+                  <button class="danger-button" type="submit">Retire authorization</button>
+                </form>
               </td>
             </tr>
           {% endfor %}

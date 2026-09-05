@@ -250,7 +250,6 @@
     if (endedReported) return;
     endedReported = true;
     state.dataset.controllerActive = "false";
-    await reportMetrics(true, false).catch(function () {});
     window.clearInterval(statsTimer);
     statsTimer = null;
     window.clearInterval(serverStateTimer);
@@ -267,20 +266,24 @@
     video.style.display = "none";
     show(message, kind);
     peer.close();
-    await fetch(`${base}/ended`, {
+    // Never let a slow terminal telemetry or cleanup request strand the page
+    // in an apparently active session. Start the durable stop first, permit it
+    // to survive navigation, and schedule the reload independently.
+    reloadAfterTerminal(1500);
+    fetch(`${base}/ended`, {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ form_token: formToken, reason: message }),
+      keepalive: true,
     }).catch(function () {});
-    reloadAfterTerminal(1500);
+    reportMetrics(true, true).catch(function () {});
   }
 
   async function endFromServer(message) {
     if (endedReported) return;
     endedReported = true;
     state.dataset.controllerActive = "false";
-    await reportMetrics(true, false).catch(function () {});
     window.clearInterval(statsTimer);
     statsTimer = null;
     window.clearInterval(serverStateTimer);
@@ -298,6 +301,7 @@
     show(message, "ended");
     peer.close();
     reloadAfterTerminal();
+    reportMetrics(true, true).catch(function () {});
   }
 
   function terminalStatusMessage(current) {

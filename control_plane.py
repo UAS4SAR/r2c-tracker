@@ -6732,6 +6732,44 @@ class ControlPlaneStore:
                 credential, requested_at
             )
 
+    async def retire_device_credential(
+        self,
+        *,
+        credential_id: str,
+        organization_id: str,
+        actor_id: str,
+        now: Optional[datetime] = None,
+    ) -> DeviceCredentialAdminRecord:
+        retired_at = as_utc(now or utc_now())
+        async with self.sessions() as session:
+            credential = await session.get(DeviceCredential, credential_id)
+            if credential is None or credential.organization_id != organization_id:
+                raise ControlPlaneError("Device credential not found.")
+            user = await session.get(OrganizationUser, actor_id)
+            if user is None or user.organization_id != organization_id:
+                raise ControlPlaneError("Device credential administrator is invalid.")
+            if credential.state in {"revoked", "superseded"}:
+                raise ControlPlaneError("Device authorization is already retired.")
+            credential.state = "revoked"
+            credential.reauth_requested_at = None
+            session.add(ControlPlaneAuditEvent(
+                organization_id=organization_id,
+                actor_type="organization_user",
+                actor_id=actor_id,
+                event_type="device.credential_retired",
+                details_json=json.dumps({
+                    "credential_id": credential.id,
+                    "device_name": credential.device_name,
+                    "message": (
+                        f"Administrator retired the authorization for "
+                        f"{credential.device_name}."
+                    ),
+                }, sort_keys=True),
+                created_at=retired_at,
+            ))
+            await session.commit()
+            return self._device_credential_admin_record(credential, retired_at)
+
     async def get_device_reauthentication_record(
         self,
         *,

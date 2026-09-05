@@ -28,21 +28,19 @@
   } catch (_error) {
     renderedInProgressSessionIds = [];
   }
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const query = new URLSearchParams();
   if (deviceId) query.set("device", deviceId);
   if (streamFilter) query.set("stream", streamFilter);
   if (sessionFilter) query.set("session", sessionFilter);
   const suffix = query.toString() ? `?${query.toString()}` : "";
-  const eventUrl = `${protocol}//${window.location.host}/${encodeURIComponent(designator)}/streams/events${suffix}`;
   const statusUrl = `${state.dataset.statusUrl || ""}${suffix}`;
-  let retryDelayMs = 1000;
+  let watchActive = state.dataset.watchActive === "true";
   let timer = null;
   let stopped = false;
-  let socket = null;
   let refreshPromise = null;
   let refreshQueued = false;
   let windowFocused = document.hasFocus();
+  const activeRefreshMs = 10000;
 
   function pageHasFocus() {
     return !document.hidden && windowFocused;
@@ -51,17 +49,11 @@
   function suspend() {
     window.clearTimeout(timer);
     timer = null;
-    if (socket) {
-      const activeSocket = socket;
-      socket = null;
-      activeSocket.close();
-    }
   }
 
   function stopForNavigation() {
     stopped = true;
-    window.clearTimeout(timer);
-    if (socket) socket.close();
+    suspend();
   }
 
   document.addEventListener("submit", stopForNavigation, true);
@@ -113,6 +105,9 @@
     });
     if (!response.ok) throw new Error(`Stream status ${response.status}`);
     const status = await response.json();
+    window.dispatchEvent(new CustomEvent("r2c:streams-changed", {
+      detail: status,
+    }));
     if (!requestControllerActive() &&
         status.membershipRevision !== renderedMembershipRevision) {
       reloadForMembershipChange();
@@ -127,7 +122,15 @@
       reloadForMembershipChange();
       return;
     }
+    watchActive = (status.streams || []).length > 0 ||
+      currentInProgressSessionIds.length > 0;
     (status.streams || []).forEach(updatePreview);
+  }
+
+  function scheduleRefresh() {
+    suspend();
+    if (stopped || !watchActive || !pageHasFocus()) return;
+    timer = window.setTimeout(reconcile, activeRefreshMs);
   }
 
   function reconcile() {
@@ -137,56 +140,19 @@
     }
     refreshPromise = fetchAndReconcile()
       .catch(function () {
-        // The socket's reconnect/backoff will provide the next reconciliation.
+        // A still-active page gets another bounded status request; an idle
+        // page waits for the operator to focus it again.
       })
       .finally(function () {
         refreshPromise = null;
         if (refreshQueued && !stopped) {
           refreshQueued = false;
           reconcile();
+          return;
         }
+        scheduleRefresh();
       });
     return refreshPromise;
-  }
-
-  function scheduleReconnect(delayMs) {
-    if (stopped || !pageHasFocus()) return;
-    window.clearTimeout(timer);
-    timer = window.setTimeout(connect, delayMs);
-  }
-
-  function connect() {
-    if (stopped || !pageHasFocus()) return;
-    const connectedSocket = new WebSocket(eventUrl);
-    socket = connectedSocket;
-    connectedSocket.onopen = function () {
-      retryDelayMs = 1000;
-    };
-    connectedSocket.onmessage = function (event) {
-      let message;
-      try {
-        message = JSON.parse(event.data);
-      } catch (_error) {
-        return;
-      }
-      if (message.type === "ready" || message.type === "streams_changed") {
-        window.dispatchEvent(new CustomEvent("r2c:streams-changed", {
-          detail: message,
-        }));
-        reconcile();
-      }
-    };
-    connectedSocket.onclose = function () {
-      if (socket !== connectedSocket) return;
-      socket = null;
-      if (!stopped && pageHasFocus()) {
-        scheduleReconnect(retryDelayMs);
-        retryDelayMs = Math.min(retryDelayMs * 2, 30000);
-      }
-    };
-    connectedSocket.onerror = function () {
-      connectedSocket.close();
-    };
   }
 
   function syncPageActivity() {
@@ -194,7 +160,10 @@
       suspend();
       return;
     }
-    if (!stopped && !socket) scheduleReconnect(0);
+    // A newly focused page performs one bounded reconciliation even when it
+    // was rendered idle. Repeated checks run only while the server reports
+    // an advertised stream or an in-progress request.
+    if (!stopped) reconcile();
   }
 
   function handleFocus() {
@@ -211,5 +180,5 @@
   window.addEventListener("focus", handleFocus);
   window.addEventListener("blur", handleBlur);
   window.addEventListener("pageshow", syncPageActivity);
-  connect();
+  reconcile();
 })();

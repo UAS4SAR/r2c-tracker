@@ -8885,6 +8885,19 @@ async def organization_admin_audit(
     )
 
 
+def device_identity_fingerprint(
+        organization_id: str,
+        installation_id: str) -> str:
+    """Return a stable, organization-scoped display fingerprint."""
+    clean_installation_id = installation_id.strip().lower()
+    if not clean_installation_id:
+        return "Legacy identity"
+    digest = hashlib.sha256(
+        f"{organization_id}\0{clean_installation_id}".encode("utf-8")
+    ).hexdigest().upper()
+    return f"{digest[:4]}-{digest[4:8]}-{digest[8:12]}"
+
+
 async def _organization_admin_page(
         request: Request,
         designator: str,
@@ -8939,6 +8952,32 @@ async def _organization_admin_page(
         current_device_keys.add(device_key)
         current_device_credentials.append(credential)
     current_device_credentials = tuple(current_device_credentials)
+    connected_device_credential_ids = {
+        credential.id
+        for credential in await r2c_hub.list_connected_tablets(organization.id)
+    } if can_manage_device_credentials else set()
+    device_identity_fingerprints = {
+        credential.id: device_identity_fingerprint(
+            organization.id, credential.installation_id
+        )
+        for credential in current_device_credentials
+    }
+    possible_replacement_groups: dict[tuple[str, str, str], list[str]] = {}
+    for credential in current_device_credentials:
+        if not credential.authorized_user_id or not credential.device_model.strip():
+            continue
+        key = (
+            credential.authorized_user_id,
+            credential.platform.casefold(),
+            credential.device_model.strip().casefold(),
+        )
+        possible_replacement_groups.setdefault(key, []).append(credential.id)
+    possible_replacement_credential_ids = {
+        credential_id
+        for credential_ids in possible_replacement_groups.values()
+        if len(credential_ids) > 1
+        for credential_id in credential_ids
+    }
     credential_now = datetime.now(UTC)
     usable_device_credentials = tuple(
         credential for credential in current_device_credentials
@@ -9030,6 +9069,11 @@ async def _organization_admin_page(
             ),
             "device_credentials": device_credentials,
             "current_device_credentials": current_device_credentials,
+            "possible_replacement_credential_ids": (
+                possible_replacement_credential_ids
+            ),
+            "connected_device_credential_ids": connected_device_credential_ids,
+            "device_identity_fingerprints": device_identity_fingerprints,
             "usable_device_credentials": usable_device_credentials,
             "renewable_device_credentials": renewable_device_credentials,
             "expiring_device_credentials": expiring_device_credentials,
@@ -9871,6 +9915,7 @@ async def organization_streams(
         connected_tablets,
         recording_download_requests,
         beta_allowance,
+        subscription,
     ) = await asyncio.gather(
             control_plane_store.list_active_video_streams(organization.id),
             control_plane_store.list_video_stream_requests(
@@ -9888,6 +9933,20 @@ async def organization_streams(
                 organization_id=organization.id,
             ),
             control_plane_store.get_extended_beta_allowance(organization.id),
+            control_plane_store.get_subscription(organization.id),
+        )
+    streaming_utilization = None
+    streaming_utilization_label = "month to date"
+    if subscription is not None:
+        utilization_now = datetime.now(UTC)
+        period_start, period_end, streaming_utilization_label = (
+            subscription_utilization_window(subscription, utilization_now)
+        )
+        streaming_utilization = await control_plane_store.streaming_utilization(
+            organization_id=organization.id,
+            period_starts_at=period_start,
+            period_ends_at=period_end,
+            as_of=utilization_now,
         )
     if tablet_device is not None:
         streams = tuple(
@@ -10026,6 +10085,8 @@ async def organization_streams(
             "cancellable_request_by_session": cancellable_request_by_session,
             "active_consumers_by_device_id": active_consumers_by_device_id,
             "remote_control_enabled": remote_control_enabled,
+            "streaming_utilization": streaming_utilization,
+            "streaming_utilization_label": streaming_utilization_label,
             "recording_downloads_enabled": RECORDING_DOWNLOADS_ENABLED,
             "video_streaming_allowed": (
                 beta_allowance is None or beta_allowance.video_streaming_allowed
@@ -10135,7 +10196,11 @@ def sort_streams_newest_first(streams) -> tuple:
 def stream_membership_revision(streams) -> str:
     """Identify the rendered stream set without volatile source telemetry."""
     encoded = json.dumps(
-        sorted(stream.session_id for stream in streams),
+        {
+            "refresh_transport": "bounded-status-v1",
+            "sessions": sorted(stream.session_id for stream in streams),
+        },
+        sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:20]
@@ -11355,6 +11420,41 @@ async def organization_require_device_reauthentication(
     )
 
 
+@app.post("/{designator}/device-credentials/{credential_id}/retire")
+async def organization_retire_device_credential(
+        request: Request,
+        designator: str,
+        credential_id: str,
+        form_token: Annotated[str, Form()]):
+    verify_csrf(request, "organization_admin", form_token)
+    organization, user = await require_organization_user(
+        request,
+        designator,
+        ("organization_owner", "user_admin"),
+    )
+    try:
+        credential = await control_plane_store.retire_device_credential(
+            credential_id=credential_id,
+            organization_id=organization.id,
+            actor_id=user.id,
+        )
+        await r2c_hub.disconnect_device_credential(
+            credential.id,
+            reason="Device authorization retired",
+        )
+        flash(
+            request,
+            f"Retired the old authorization for {credential.device_name}.",
+            "success",
+        )
+    except ControlPlaneError as exc:
+        flash(request, str(exc), "warning")
+    return RedirectResponse(
+        url=f"/{organization.designator.lower()}/admin/enrollments#device-authorizations",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @app.post("/{designator}/device-credentials/extend")
 async def organization_extend_all_device_credentials(
         request: Request,
@@ -12437,7 +12537,7 @@ async def organization_stream_events(
         device: str = "",
         stream: str = "",
         session: str = ""):
-    """Notify an authenticated viewer only when stream lifecycle state changes."""
+    """Migrate authenticated legacy event viewers to bounded status refresh."""
     if not organization_site_ready():
         await websocket.close(code=1013, reason="Organization site unavailable")
         return
@@ -12456,116 +12556,20 @@ async def organization_stream_events(
         await websocket.close(code=1008, reason="Organization login required")
         return
 
-    clean_device_id = device.strip()
-    clean_stream = stream.strip().lower()
-    clean_session = session.strip()
-
-    async def renew_thumbnail_preview() -> None:
-        active_streams = await control_plane_store.list_active_video_streams(
-            organization.id
-        )
-        for device_id in thumbnail_preview_device_ids(
-            active_streams,
-            clean_device_id,
-        ):
-            delivered = await r2c_hub.send_video_thumbnail_preview(
-                device_credential_id=device_id,
-                ttl_seconds=25,
-            )
-            if not delivered:
-                await control_plane_store.notify_video_thumbnail_preview(
-                    organization_id=organization.id,
-                    device_credential_id=device_id,
-                    ttl_seconds=25,
-                )
-
-    async def current_status():
-        streams, requests = await asyncio.gather(
-            control_plane_store.list_active_video_streams(organization.id),
-            control_plane_store.list_video_stream_requests(
-                organization_id=organization.id,
-                requester_user_id=user.id,
-            ),
-        )
-        if clean_device_id:
-            streams = tuple(
-                item for item in streams
-                if item.device_credential_id == clean_device_id
-            )
-        if clean_stream:
-            streams = tuple(
-                item for item in streams
-                if item.drone_designator.strip().lower() == clean_stream
-            )
-        if clean_session:
-            streams = tuple(
-                item for item in streams
-                if item.session_id == clean_session
-                and item.media_kind == "recording"
-            )
-        return organization_stream_status(streams, requests)
-
-    await organization_stream_event_hub.connect(
-        organization.id,
-        organization.designator,
-        user.email,
-        websocket,
-    )
-    try:
-        status_snapshot = await current_status()
-        await websocket.send_json({
-            "type": "ready",
-            "active": status_snapshot["active"],
-            "revision": status_snapshot["revision"],
-            "membershipRevision": status_snapshot["membership_revision"],
-        })
-        while True:
-            await renew_thumbnail_preview()
-            expiry = status_snapshot["next_expiry"]
-            # PostgreSQL notifications are the fast path.  Reconcile over the
-            # already-open focused-page socket as a bounded fallback so a
-            # missed notification or a Cloud Run revision handoff repairs
-            # itself without another connection or operator refresh.
-            # Approval can race with the reconnect which follows preflight.
-            # Reconcile quickly while the requester is specifically awaiting
-            # the pilot decision so a missed cross-instance notification does
-            # not add a fixed 30-second delay before media signaling.
-            timeout_seconds = (
-                1.0 if status_snapshot["awaiting_approval"] else 30.0
-            )
-            # A live catalog can represent one tablet or several.  Renew its
-            # 25-second device leases before they expire in either case.
-            if status_snapshot["active"]:
-                timeout_seconds = min(timeout_seconds, 10.0)
-            if expiry is not None:
-                expiry = expiry if expiry.tzinfo else expiry.replace(tzinfo=UTC)
-                timeout_seconds = min(
-                    timeout_seconds,
-                    max(
-                        0.25,
-                        (expiry.astimezone(UTC) - datetime.now(UTC)).total_seconds(),
-                    ),
-                )
-            try:
-                client_message = await asyncio.wait_for(
-                    websocket.receive_text(),
-                    timeout=timeout_seconds,
-                )
-                if client_message == "unsubscribe":
-                    await websocket.send_json({"type": "unsubscribed"})
-                    return
-            except asyncio.TimeoutError:
-                current = await current_status()
-                if current["revision"] != status_snapshot["revision"]:
-                    await websocket.send_json({"type": "streams_changed"})
-                    return
-                status_snapshot = current
-    except WebSocketDisconnect:
-        pass
-    finally:
-        await organization_stream_event_hub.disconnect(
-            organization.id, websocket
-        )
+    # Compatibility for pages opened before passive event sockets were
+    # retired. Their stream-membership revision differs from the bounded
+    # refresh revision, so this one message makes the old script reload. Never
+    # leave the compatibility request open: an abandoned browser tab must not
+    # keep a Cloud Run instance active.
+    await websocket.accept()
+    await websocket.send_json({
+        "type": "ready",
+        "active": False,
+        "revision": "bounded-status-refresh-required",
+        "membershipRevision": "bounded-status-refresh-required",
+    })
+    await websocket.close(code=1000, reason="bounded-status-refresh-required")
+    return
 
 
 async def serve_r2c_websocket(

@@ -271,14 +271,14 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertEqual(400, response.status_code)
 
 
-    def test_stream_event_socket_yields_to_form_navigation(self):
+    def test_stream_status_refresh_yields_to_form_navigation(self):
         script = Path("static/organization_streams_live.js").read_text()
         submit_listener = (
             'document.addEventListener("submit", stopForNavigation, true)'
         )
         self.assertIn(submit_listener, script)
         self.assertIn("stopped = true", script)
-        self.assertLess(script.index(submit_listener), script.index("connect();"))
+        self.assertLess(script.index(submit_listener), script.rindex("reconcile();"))
 
     def test_device_reauthentication_copy_requests_authentication_without_blocked_language(self):
         template = Path("templates/device_reauthenticate.html").read_text()
@@ -288,7 +288,7 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertIn("Sign in with Google", template)
         self.assertNotIn("temporarily blocked from Tracker", template)
 
-    def test_stream_event_socket_stops_without_focus(self):
+    def test_stream_status_refresh_stops_without_focus(self):
         script = Path("static/organization_streams_live.js").read_text()
 
         self.assertIn("document.hasFocus()", script)
@@ -296,13 +296,19 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertIn('window.addEventListener("focus", handleFocus)', script)
         self.assertIn("windowFocused = true", script)
         self.assertIn("function suspend()", script)
-        self.assertIn("if (socket !== connectedSocket) return", script)
+        self.assertIn("window.clearTimeout(timer)", script)
+        self.assertNotIn("new WebSocket", script)
+        self.assertNotIn("window.setInterval", script)
 
-    def test_stream_event_socket_listens_while_focused_without_active_stream(self):
+    def test_stream_status_refresh_is_bounded_when_page_is_idle(self):
         script = Path("static/organization_streams_live.js").read_text()
+        template = Path("templates/organization_streams.html").read_text()
 
-        self.assertNotIn('state.dataset.active !== "true"', script)
-        self.assertIn('message.type === "ready"', script)
+        self.assertIn('let watchActive = state.dataset.watchActive === "true"', script)
+        self.assertIn("if (stopped || !watchActive || !pageHasFocus()) return", script)
+        self.assertIn("if (!stopped) reconcile()", script)
+        self.assertIn('data-watch-active="', template)
+        self.assertIn("organization_streams_live.js?v=20260905-1", template)
         self.assertIn("status.membershipRevision !== renderedMembershipRevision", script)
         self.assertIn('const sessionFilter = state.dataset.sessionFilter', script)
         self.assertIn('query.set("session", sessionFilter)', script)
@@ -381,8 +387,10 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         template = Path("templates/organization_streams.html").read_text()
 
         self.assertIn('("Live sessions", live_streams, "live")', template)
-        self.assertIn("$0.05/GB", template)
-        self.assertIn("$0.12/GB", template)
+        self.assertIn("Streaming utilization:", template)
+        self.assertIn("viewer-hours", template)
+        self.assertNotIn("$0.05/GB", template)
+        self.assertNotIn("$0.12/GB", template)
         self.assertIn('("Recorded sessions", recorded_streams, "recording")', template)
         self.assertNotIn("Current tablet session", template)
         self.assertLess(
@@ -465,6 +473,57 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertIn("function reloadAfterTerminal(delayMs = 250)", script)
         self.assertEqual(1, script.count("reloadAfterTerminal();"))
         self.assertIn("reloadAfterTerminal(1500);", script)
+        end_function = script[
+            script.index("async function reportEnded"):
+            script.index("async function endFromServer")
+        ]
+        self.assertIn("keepalive: true", end_function)
+        self.assertLess(
+            end_function.index("reloadAfterTerminal(1500)"),
+            end_function.index("fetch(`${base}/ended`"),
+        )
+        server_end_function = script[
+            script.index("async function endFromServer"):
+            script.index("function terminalStatusMessage")
+        ]
+        self.assertLess(
+            server_end_function.index("reloadAfterTerminal()"),
+            server_end_function.index("reportMetrics(true, true)"),
+        )
+
+    def test_device_authorization_page_supports_safe_duplicate_cleanup(self):
+        template = Path("templates/organization_admin.html").read_text()
+        source = Path("main.py").read_text()
+
+        self.assertIn("possible_replacement_credential_ids", template)
+        self.assertIn("Possible replacement:", template)
+        self.assertIn("Device identity", template)
+        self.assertIn("device_identity_fingerprints", template)
+        self.assertIn("Currently connected", template)
+        self.assertIn("connected_device_credential_ids", template)
+        self.assertIn("Retire authorization", template)
+        self.assertIn("/retire", template)
+        self.assertIn("async def organization_retire_device_credential", source)
+
+    def test_device_identity_fingerprint_is_stable_scoped_and_not_raw(self):
+        installation_id = "11111111-2222-3333-4444-555555555555"
+
+        first = main.device_identity_fingerprint("organization-a", installation_id)
+        repeated = main.device_identity_fingerprint(
+            "organization-a", installation_id.upper()
+        )
+        other_organization = main.device_identity_fingerprint(
+            "organization-b", installation_id
+        )
+
+        self.assertRegex(first, r"^[0-9A-F]{4}(?:-[0-9A-F]{4}){2}$")
+        self.assertEqual(first, repeated)
+        self.assertNotEqual(first, other_organization)
+        self.assertNotIn("11111111", first)
+        self.assertEqual(
+            "Legacy identity",
+            main.device_identity_fingerprint("organization-a", ""),
+        )
 
     def test_video_status_preserves_terminal_device_reason(self):
         script = Path("static/video_media.js").read_text()
@@ -504,7 +563,7 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             'reportDiagnostic("video_play_rejected"',
         ):
             self.assertIn(diagnostic, script)
-        self.assertIn("video_media.js?v=20260904-1", template)
+        self.assertIn("video_media.js?v=20260905-1", template)
 
     def test_media_offer_posts_on_first_relay_candidate(self):
         script = Path("static/video_media.js").read_text()
@@ -2968,6 +3027,14 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertIn('class="stream-preview-image"', streams_page.text)
         self.assertIn("Viewer preview", streams_page.text)
         self.assertIn("does not start video", streams_page.text)
+        self.assertIn("Streaming utilization:", streams_page.text)
+        self.assertIn("0.00 viewer-hours", streams_page.text)
+        self.assertIn("month to date", streams_page.text)
+        self.assertIn("One viewer-hour is one hour", streams_page.text)
+        self.assertIn("Video quality does not change", streams_page.text)
+        self.assertNotIn("$0.05/GB", streams_page.text)
+        self.assertNotIn("$0.12/GB", streams_page.text)
+        self.assertNotIn("$20.00 extended-beta", streams_page.text)
         self.assertNotIn("/whep", streams_page.text)
         self.assertNotIn("/streams/status", streams_page.text)
         tablet_code = tablet_link_code("ncssar", "Android video tablet")
@@ -3014,6 +3081,9 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             self.assertIn("Android video tablet streams", tablet_page.text)
             self.assertIn('href="/ncssar/streams"', tablet_page.text)
             self.assertIn("Back to streams", tablet_page.text)
+            self.assertIn("Streaming utilization:", tablet_page.text)
+            self.assertIn("0.00 viewer-hours", tablet_page.text)
+            self.assertNotIn("estimated list rates", tablet_page.text)
             self.assertIn("<td>10A</td>", tablet_page.text)
             self.assertIn("<td>2B</td>", tablet_page.text)
             thumbnail = self.client.get(
@@ -3356,19 +3426,11 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         with self.client.websocket_connect(
             "/ncssar/streams/events"
         ) as event_websocket:
-            self.assertEqual("ready", event_websocket.receive_json()["type"])
-            event_websocket.portal.call(
-                main.organization_stream_event_hub.broadcast,
-                organization.id,
-            )
+            migration = event_websocket.receive_json()
+            self.assertEqual("ready", migration["type"])
             self.assertEqual(
-                "streams_changed",
-                event_websocket.receive_json()["type"],
-            )
-            event_websocket.send_text("unsubscribe")
-            self.assertEqual(
-                "unsubscribed",
-                event_websocket.receive_json()["type"],
+                "bounded-status-refresh-required",
+                migration["membershipRevision"],
             )
         stream_form_token = html.unescape(
             STREAM_REQUEST_TOKEN_RE.search(streams_page.text).group(1)
@@ -3614,28 +3676,9 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             ready = event_websocket.receive_json()
             self.assertEqual("ready", ready["type"])
             self.assertFalse(ready["active"])
-            self.assertRegex(ready["revision"], r"^[0-9a-f]{20}$")
-            with self.client.websocket_connect(
-                "/ncssar/ws/r2c",
-                headers={"X-SAR-Token": device.token},
-            ) as r2c_websocket:
-                r2c_websocket.send_json({
-                    "type": "video_stream_advertisement",
-                    "incidentName": "Reconnect test",
-                    "streams": [{
-                        "sessionId": "00000000-0000-0000-0000-000000000099",
-                        "droneDesignator": "NCS1",
-                    }],
-                })
-                self.assertTrue(r2c_websocket.receive_json()["accepted"])
             self.assertEqual(
-                "streams_changed",
-                event_websocket.receive_json()["type"],
-            )
-            event_websocket.send_text("unsubscribe")
-            self.assertEqual(
-                "unsubscribed",
-                event_websocket.receive_json()["type"],
+                "bounded-status-refresh-required",
+                ready["revision"],
             )
 
     def test_google_email_must_be_active_in_the_organization(self):

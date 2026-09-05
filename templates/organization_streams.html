@@ -276,8 +276,8 @@
   <div class="notice" role="alert">
     <strong>Remote video streaming is disabled through
     {{ video_disabled_month_end.strftime("%d %b %Y") }}.</strong>
-    The organization has reached 90% of its $20.00 extended-beta monthly
-    allowance. Flight logs and R2C-based drone-owner arbitration remain available.
+    The organization has reached its current extended-beta streaming threshold.
+    Flight logs and R2C-based drone-owner arbitration remain available.
   </div>
   {% endif %}
 
@@ -300,10 +300,24 @@
   </div>
 
   <div class="notice" role="note">
-    Remotely viewing live video or playing a recording can use up to
-    approximately $0.05/GB of relayed data. Downloading a recording costs
-    approximately $0.12/GB transferred. These are estimated list rates;
-    provider free allowances may reduce the actual cost.
+    <strong>Streaming utilization:</strong>
+    {% if streaming_utilization %}
+    {{ "%.2f"|format(streaming_utilization.used_hours) }} viewer-hours
+    {{ streaming_utilization_label }}.
+    {% if streaming_utilization.allowance_hours is not none %}
+    Estimated remaining capacity is
+    {{ "%.2f"|format(streaming_utilization.remaining_hours) }} viewer-hours
+    of {{ "%.2f"|format(streaming_utilization.allowance_hours) }} included for
+    this subscription period.
+    {% else %}
+    The included viewer-hour allowance is still being calibrated, so an
+    estimate of remaining capacity is not yet available.
+    {% endif %}
+    {% else %}
+    Streaming utilization is not available yet.
+    {% endif %}
+    One viewer-hour is one hour of live or recorded video delivered to one
+    viewer. Video quality does not change the displayed viewer-hour total.
   </div>
 
   {% if not tablet_device %}
@@ -636,10 +650,11 @@
      data-device-id="{{ tablet_device_id }}"
      data-stream-filter="{{ stream_filter }}"
      data-session-filter="{{ session_filter }}"
+     data-watch-active="{{ 'true' if stream_status_active or request_in_progress_session_ids else 'false' }}"
      data-membership-revision="{{ stream_membership_revision }}"
      data-in-progress-session-ids="{{ request_in_progress_session_ids | list | sort | tojson | forceescape }}"
      data-status-url="/{{ organization.designator|lower }}/streams/live-status"></div>
-<script src="/static/organization_streams_live.js?v=20260904-1" defer></script>
+<script src="/static/organization_streams_live.js?v=20260905-1" defer></script>
 {% if recording_downloads_enabled %}
 {% for recording_download in recording_downloads_by_session.values() %}
 {% if recording_download.state in ("awaiting_approval", "approved", "uploading") %}
@@ -661,6 +676,6 @@
      data-form-token="{{ csrf_token }}"
      data-controller-active="true"
      data-ice-servers='{{ video_ice_servers|tojson }}'></div>
-<script src="/static/video_media.js?v=20260904-1" defer></script>
+<script src="/static/video_media.js?v=20260905-1" defer></script>
 {% endif %}
 {% endblock %}
