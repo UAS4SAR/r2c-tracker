@@ -39,11 +39,13 @@
   let stopped = false;
   let refreshPromise = null;
   let refreshQueued = false;
-  let windowFocused = document.hasFocus();
   const activeRefreshMs = 10000;
 
-  function pageHasFocus() {
-    return !document.hidden && windowFocused;
+  function pageIsVisible() {
+    // A dashboard on a second display remains operationally visible while the
+    // operator works in another window or on the tablet. Window focus is not a
+    // valid proxy for whether a live-session row should stay current.
+    return !document.hidden;
   }
 
   function suspend() {
@@ -129,7 +131,7 @@
 
   function scheduleRefresh() {
     suspend();
-    if (stopped || !watchActive || !pageHasFocus()) return;
+    if (stopped || !watchActive || !pageIsVisible()) return;
     timer = window.setTimeout(reconcile, activeRefreshMs);
   }
 
@@ -156,7 +158,7 @@
   }
 
   function syncPageActivity() {
-    if (!pageHasFocus()) {
+    if (!pageIsVisible()) {
       suspend();
       return;
     }
@@ -166,19 +168,8 @@
     if (!stopped) reconcile();
   }
 
-  function handleFocus() {
-    windowFocused = true;
-    syncPageActivity();
-  }
-
-  function handleBlur() {
-    windowFocused = false;
-    syncPageActivity();
-  }
-
   document.addEventListener("visibilitychange", syncPageActivity);
-  window.addEventListener("focus", handleFocus);
-  window.addEventListener("blur", handleBlur);
+  window.addEventListener("focus", syncPageActivity);
   window.addEventListener("pageshow", syncPageActivity);
   reconcile();
 })();

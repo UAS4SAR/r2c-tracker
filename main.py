@@ -274,6 +274,10 @@ class DeviceEnrollmentRedeemRequest(BaseModel):
     functionality_release: int = Field(default=0, ge=0, le=1_000_000)
 
 
+class DeviceAuthorizationReplacementRequest(BaseModel):
+    replacement_credential_id: str = Field(min_length=36, max_length=36)
+
+
 class BrowserVideoPreflightOffer(BaseModel):
     sdp: str = Field(min_length=3, max_length=262_144)
     form_token: str = Field(min_length=16, max_length=512)
@@ -10323,6 +10327,23 @@ async def organization_request_recording_download(
     )
 
 
+def recording_download_filename(raw_filename: str) -> str:
+    """Remove tablet-private catalog identity from an operator-facing filename."""
+    filename = re.sub(
+        r"[^A-Za-z0-9._-]+", "_", os.path.basename(raw_filename or "recording.mp4")
+    )
+    catalog_match = re.fullmatch(
+        r"[A-Za-z0-9._-]+__"
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}__(.+)",
+        filename,
+    )
+    if catalog_match:
+        filename = catalog_match.group(1)
+    filename = re.sub(r"\.tmp(?=\.mp4$)", "", filename, flags=re.IGNORECASE)
+    return filename[:240] or "recording.mp4"
+
+
 @app.put("/recording-downloads/{request_id}/content")
 async def upload_recording_download(
         request: Request, request_id: str,
@@ -10355,10 +10376,9 @@ async def upload_recording_download(
         )
     except ControlPlaneError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    raw_filename = request.headers.get("X-R2C-Filename", "recording.mp4")
-    filename = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.basename(raw_filename))[:240]
-    if not filename:
-        filename = "recording.mp4"
+    filename = recording_download_filename(
+        request.headers.get("X-R2C-Filename", "recording.mp4")
+    )
     media_type = (request.headers.get("Content-Type", "video/mp4") or "video/mp4")[:120]
     relative_dir = os.path.join(
         "organizations", credential.designator.lower(), "recordings", item.stream_session_id,
@@ -11618,6 +11638,69 @@ async def organization_enrollment_landing(
             if enrollment_error
             else status.HTTP_200_OK
         ),
+    )
+
+
+@app.get("/api/v1/device-authorization/replacement-candidates")
+async def device_authorization_replacement_candidates(
+        credential: Optional[DeviceCredentialRecord] = Depends(get_api_key)):
+    if credential is None:
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN,
+            detail="Active device credential required.",
+        )
+    candidates = await control_plane_store.list_device_replacement_candidates(
+        credential_id=credential.id,
+        organization_id=credential.organization_id,
+    )
+    return JSONResponse(
+        {
+            "schema_version": 1,
+            "device_model": next(
+                (candidate.device_model for candidate in candidates), ""
+            ),
+            "candidates": [
+                {
+                    "credential_id": candidate.id,
+                    "device_name": candidate.device_name,
+                    "device_model": candidate.device_model,
+                    "platform": candidate.platform,
+                }
+                for candidate in candidates
+            ],
+        },
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@app.post("/api/v1/device-authorization/replace")
+async def replace_device_authorization(
+        payload: DeviceAuthorizationReplacementRequest,
+        credential: Optional[DeviceCredentialRecord] = Depends(get_api_key)):
+    if credential is None:
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN,
+            detail="Active device credential required.",
+        )
+    try:
+        result = await control_plane_store.replace_device_authorization(
+            current_credential_id=credential.id,
+            replacement_credential_id=payload.replacement_credential_id,
+        )
+    except ControlPlaneError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await r2c_hub.disconnect_device_credential(
+        payload.replacement_credential_id,
+        reason="Replaced by re-enrolled tablet",
+    )
+    return JSONResponse(
+        {
+            "schema_version": 1,
+            "credential_id": result.id,
+            "canonical_device_name": result.device_name,
+            "replaced_credential_id": payload.replacement_credential_id,
+        },
+        headers={"Cache-Control": "private, no-store"},
     )
 
 

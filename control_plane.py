@@ -6786,6 +6786,47 @@ class ControlPlaneStore:
                 return None
             return self._device_credential_admin_record(credential, utc_now())
 
+    async def list_device_replacement_candidates(
+        self,
+        *,
+        credential_id: str,
+        organization_id: str,
+    ) -> tuple[DeviceCredentialAdminRecord, ...]:
+        """Return same-member/model devices that a new installation may replace."""
+        async with self.sessions() as session:
+            credential = await session.get(DeviceCredential, credential_id)
+            if (
+                credential is None
+                or credential.organization_id != organization_id
+                or credential.state != "active"
+                or credential.platform != "android"
+                or credential.authorized_user_id is None
+                or not credential.device_model
+            ):
+                return ()
+            candidates = tuple((await session.scalars(
+                select(DeviceCredential)
+                .where(
+                    DeviceCredential.organization_id == organization_id,
+                    DeviceCredential.id != credential.id,
+                    DeviceCredential.created_at < credential.created_at,
+                    DeviceCredential.authorized_user_id
+                    == credential.authorized_user_id,
+                    DeviceCredential.platform == credential.platform,
+                    func.lower(DeviceCredential.device_model)
+                    == credential.device_model.casefold(),
+                    DeviceCredential.installation_id != credential.installation_id,
+                    DeviceCredential.state.in_((
+                        "active", "expired", "reauth_required",
+                    )),
+                )
+                .order_by(DeviceCredential.created_at.desc())
+            )).all())
+            return tuple(
+                self._device_credential_admin_record(candidate, utc_now())
+                for candidate in candidates
+            )
+
     async def complete_device_reauthentication(
         self,
         *,
@@ -6849,6 +6890,85 @@ class ControlPlaneStore:
             ))
             await session.commit()
             return self._device_credential_admin_record(credential, completed_at)
+
+    async def replace_device_authorization(
+        self,
+        *,
+        current_credential_id: str,
+        replacement_credential_id: str,
+        now: Optional[datetime] = None,
+    ) -> DeviceCredentialAdminRecord:
+        """Confirm that an active credential replaces the same physical tablet."""
+        replaced_at = as_utc(now or utc_now())
+        async with self.sessions() as session:
+            current = await session.get(DeviceCredential, current_credential_id)
+            replacement = await session.get(DeviceCredential, replacement_credential_id)
+            if (
+                current is None
+                or current.state != "active"
+                or current.platform != "android"
+                or current.authorized_user_id is None
+            ):
+                raise ControlPlaneError("Active organization device not found.")
+            if (
+                replacement is None
+                or replacement.id == current.id
+                or replacement.organization_id != current.organization_id
+                or replacement.authorized_user_id != current.authorized_user_id
+                or as_utc(replacement.created_at) >= as_utc(current.created_at)
+                or replacement.platform != current.platform
+                or replacement.device_model.casefold() != current.device_model.casefold()
+                or replacement.installation_id == current.installation_id
+                or replacement.state not in {"active", "expired", "reauth_required"}
+            ):
+                raise ControlPlaneError(
+                    "The selected authorization does not match this tablet and user."
+                )
+            await session.scalar(
+                select(Organization)
+                .where(Organization.id == current.organization_id)
+                .with_for_update()
+            )
+            replacement.state = "superseded"
+            replacement.reauth_requested_at = None
+            current.device_name = replacement.device_name
+            await session.execute(
+                update(ActiveVideoStream)
+                .where(
+                    ActiveVideoStream.organization_id == current.organization_id,
+                    ActiveVideoStream.device_credential_id == replacement.id,
+                )
+                .values(
+                    device_credential_id=current.id,
+                    device_name=current.device_name,
+                )
+            )
+            await session.execute(
+                update(RecordingDownloadRequest)
+                .where(
+                    RecordingDownloadRequest.organization_id == current.organization_id,
+                    RecordingDownloadRequest.device_credential_id == replacement.id,
+                )
+                .values(device_credential_id=current.id)
+            )
+            session.add(ControlPlaneAuditEvent(
+                organization_id=current.organization_id,
+                actor_type="organization_device",
+                actor_id=current.id,
+                event_type="device.authorization_replaced",
+                details_json=json.dumps({
+                    "credential_id": current.id,
+                    "replaced_credential_id": replacement.id,
+                    "device_name": current.device_name,
+                    "message": (
+                        f"{current.device_name} confirmed that its new authorization "
+                        "replaces an earlier authorization."
+                    ),
+                }, sort_keys=True),
+                created_at=replaced_at,
+            ))
+            await session.commit()
+            return self._device_credential_admin_record(current, replaced_at)
 
     async def assign_operational_device_name(
         self,
@@ -7455,9 +7575,24 @@ class ControlPlaneStore:
                 stream.organization_id != organization_id
                 or stream.device_credential_id != device_credential_id
             ):
-                raise ControlPlaneError(
-                    "Stream session belongs to a different organization device."
+                expired_recording_from_same_organization = (
+                    stream.organization_id == organization_id
+                    and clean_media_kind == "recording"
+                    and stream.media_kind == "recording"
+                    and (
+                        stream.state != "active"
+                        or (as_utc(stream.expires_at) or seen_at) <= seen_at
+                    )
                 )
+                if not expired_recording_from_same_organization:
+                    raise ControlPlaneError(
+                        "Stream session belongs to a different organization device."
+                    )
+                # Archive recordings use stable session IDs so browser links survive
+                # app restarts. Re-enrollment intentionally creates a new device
+                # credential; once the old presence has expired, let that credential
+                # resume advertising the same organization-owned recording.
+                stream.device_credential_id = device_credential_id
             is_new_stream = stream is None
             if stream is None:
                 stream = ActiveVideoStream(

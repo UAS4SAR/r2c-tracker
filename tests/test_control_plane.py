@@ -1670,6 +1670,135 @@ class ControlPlaneStoreTest(unittest.TestCase):
         issued_event = asyncio.run(self.store.list_audit_events())[0]
         self.assertEqual([first.id], issued_event.details["superseded_credential_ids"])
 
+    def test_active_device_can_replace_same_member_model_authorization(self):
+        organization = self.create_organization()
+        owner = asyncio.run(self.store.activate_owner(
+            organization.designator,
+            organization.primary_admin_email,
+            "correct horse battery staple",
+            self.now,
+        ))
+        campaign = asyncio.run(self.store.create_enrollment_campaign(
+            organization_id=organization.id,
+            label="Replacement tablet confirmation",
+            created_by_user_id=owner.id,
+            expires_in_hours=24,
+            max_redemptions=2,
+            now=self.now,
+        ))
+        previous = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="S11U",
+            device_model="Samsung SM-X930",
+            platform="android",
+            installation_id="11111111-2222-3333-4444-555555555555",
+            authorized_user_id=owner.id,
+            now=self.now,
+        ))
+        recording = asyncio.run(self.store.advertise_video_stream(
+            organization_id=organization.id,
+            device_credential_id=previous.id,
+            session_id="00000000-0000-3000-8000-000000000010",
+            incident_name="Taylor Site",
+            drone_designator="1SAR7",
+            media_kind="recording",
+            recorded_at=self.now,
+            now=self.now,
+        ))
+        replacement = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="S11U",
+            device_model="Samsung SM-X930",
+            platform="android",
+            installation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            now=self.now + timedelta(seconds=1),
+        ))
+
+        completed = asyncio.run(self.store.complete_device_reauthentication(
+            credential_id=replacement.id,
+            organization_id=organization.id,
+            user_id=owner.id,
+            now=self.now + timedelta(seconds=2),
+        ))
+        self.assertEqual(f"{previous.device_name}-2", completed.device_name)
+        candidates = asyncio.run(self.store.list_device_replacement_candidates(
+            credential_id=replacement.id,
+            organization_id=organization.id,
+        ))
+        self.assertEqual([previous.id], [candidate.id for candidate in candidates])
+
+        completed = asyncio.run(self.store.replace_device_authorization(
+            current_credential_id=replacement.id,
+            replacement_credential_id=previous.id,
+            now=self.now + timedelta(seconds=3),
+        ))
+        self.assertEqual(previous.device_name, completed.device_name)
+        credentials = asyncio.run(self.store.list_device_credentials(
+            organization.id, now=self.now + timedelta(seconds=3)
+        ))
+        by_id = {credential.id: credential for credential in credentials}
+        self.assertEqual("superseded", by_id[previous.id].state)
+        self.assertEqual("active", by_id[replacement.id].state)
+        streams = asyncio.run(self.store.list_active_video_streams(
+            organization.id, now=self.now + timedelta(seconds=3)
+        ))
+        moved = next(stream for stream in streams if stream.id == recording.id)
+        self.assertEqual(replacement.id, moved.device_credential_id)
+
+    def test_active_device_can_leave_same_model_authorization_as_new_device(self):
+        organization = self.create_organization()
+        owner = asyncio.run(self.store.activate_owner(
+            organization.designator,
+            organization.primary_admin_email,
+            "correct horse battery staple",
+            self.now,
+        ))
+        campaign = asyncio.run(self.store.create_enrollment_campaign(
+            organization_id=organization.id,
+            label="Additional tablet confirmation",
+            created_by_user_id=owner.id,
+            expires_in_hours=24,
+            max_redemptions=2,
+            now=self.now,
+        ))
+        previous = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="S11U",
+            device_model="Samsung SM-X930",
+            platform="android",
+            installation_id="11111111-2222-3333-4444-555555555555",
+            authorized_user_id=owner.id,
+            now=self.now,
+        ))
+        additional = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="S11U",
+            device_model="Samsung SM-X930",
+            platform="android",
+            installation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            now=self.now + timedelta(seconds=1),
+        ))
+
+        completed = asyncio.run(self.store.complete_device_reauthentication(
+            credential_id=additional.id,
+            organization_id=organization.id,
+            user_id=owner.id,
+            now=self.now + timedelta(seconds=2),
+        ))
+        self.assertEqual(f"{previous.device_name}-2", completed.device_name)
+        candidates = asyncio.run(self.store.list_device_replacement_candidates(
+            credential_id=additional.id,
+            organization_id=organization.id,
+        ))
+        self.assertEqual([previous.id], [candidate.id for candidate in candidates])
+        self.assertIsNotNone(asyncio.run(self.store.authenticate_device_token(
+            previous.token, self.now + timedelta(seconds=3)
+        )))
+
     def test_administrator_can_retire_one_of_two_distinct_installations(self):
         organization = self.create_organization()
         owner = asyncio.run(self.store.activate_owner(
@@ -2132,6 +2261,7 @@ class ControlPlaneStoreTest(unittest.TestCase):
             )
         )
         self.assertEqual(2, retired)
+
         remaining_streams = asyncio.run(
             self.store.list_active_video_streams(
                 organization.id,
@@ -2586,6 +2716,100 @@ class ControlPlaneStoreTest(unittest.TestCase):
                 )
             ),
         )
+
+    def test_expired_recording_can_resume_after_same_org_device_reenrollment(self):
+        organization = self.create_organization()
+        owner = asyncio.run(self.store.activate_owner(
+            organization.designator,
+            organization.primary_admin_email,
+            "correct horse battery staple",
+            self.now,
+        ))
+        campaign = asyncio.run(self.store.create_enrollment_campaign(
+            organization_id=organization.id,
+            label="Re-enrolled video tablet",
+            created_by_user_id=owner.id,
+            expires_in_hours=24,
+            max_redemptions=2,
+            now=self.now,
+        ))
+        previous_device = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="Field tablet",
+            platform="android",
+            installation_id="11111111-2222-3333-4444-555555555555",
+            authorized_user_id=owner.id,
+            now=self.now,
+        ))
+        current_device = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="Field tablet",
+            platform="android",
+            installation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            authorized_user_id=owner.id,
+            now=self.now + timedelta(seconds=1),
+        ))
+        recording_session_id = "00000000-0000-3000-8000-000000000001"
+        active_recording_session_id = "00000000-0000-3000-8000-000000000002"
+        live_session_id = "00000000-0000-4000-8000-000000000003"
+        for session_id, media_kind in (
+            (recording_session_id, "recording"),
+            (active_recording_session_id, "recording"),
+            (live_session_id, "live"),
+        ):
+            asyncio.run(self.store.advertise_video_stream(
+                organization_id=organization.id,
+                device_credential_id=previous_device.id,
+                session_id=session_id,
+                incident_name="Taylor Site",
+                drone_designator="1sar7DjMtrc4td",
+                media_kind=media_kind,
+                recorded_at=self.now if media_kind == "recording" else None,
+                now=self.now,
+            ))
+
+        resumed = asyncio.run(self.store.advertise_video_stream(
+            organization_id=organization.id,
+            device_credential_id=current_device.id,
+            session_id=recording_session_id,
+            incident_name="Taylor Site",
+            drone_designator="1sar7DjMtrc4td",
+            media_kind="recording",
+            recorded_at=self.now,
+            now=self.now + timedelta(seconds=46),
+        ))
+        self.assertEqual(current_device.id, resumed.device_credential_id)
+
+        with self.assertRaisesRegex(
+            ControlPlaneError,
+            "belongs to a different organization device",
+        ):
+            asyncio.run(self.store.advertise_video_stream(
+                organization_id=organization.id,
+                device_credential_id=current_device.id,
+                session_id=active_recording_session_id,
+                incident_name="Taylor Site",
+                drone_designator="1sar7DjMtrc4td",
+                media_kind="recording",
+                recorded_at=self.now,
+                now=self.now + timedelta(seconds=30),
+            ))
+
+        with self.assertRaisesRegex(
+            ControlPlaneError,
+            "belongs to a different organization device",
+        ):
+            asyncio.run(self.store.advertise_video_stream(
+                organization_id=organization.id,
+                device_credential_id=current_device.id,
+                session_id=live_session_id,
+                incident_name="Taylor Site",
+                drone_designator="1sar7DjMtrc4td",
+                media_kind="live",
+                now=self.now + timedelta(seconds=46),
+            ))
 
     def test_remote_control_lets_requester_select_quality_and_locks_tablet(self):
         organization = self.create_organization()

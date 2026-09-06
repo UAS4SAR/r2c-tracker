@@ -288,13 +288,13 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertIn("Sign in with Google", template)
         self.assertNotIn("temporarily blocked from Tracker", template)
 
-    def test_stream_status_refresh_stops_without_focus(self):
+    def test_stream_status_refresh_stops_only_while_tab_is_hidden(self):
         script = Path("static/organization_streams_live.js").read_text()
 
-        self.assertIn("document.hasFocus()", script)
-        self.assertIn('window.addEventListener("blur", handleBlur)', script)
-        self.assertIn('window.addEventListener("focus", handleFocus)', script)
-        self.assertIn("windowFocused = true", script)
+        self.assertIn("return !document.hidden", script)
+        self.assertNotIn("document.hasFocus()", script)
+        self.assertNotIn('window.addEventListener("blur"', script)
+        self.assertIn('window.addEventListener("focus", syncPageActivity)', script)
         self.assertIn("function suspend()", script)
         self.assertIn("window.clearTimeout(timer)", script)
         self.assertNotIn("new WebSocket", script)
@@ -305,16 +305,24 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         template = Path("templates/organization_streams.html").read_text()
 
         self.assertIn('let watchActive = state.dataset.watchActive === "true"', script)
-        self.assertIn("if (stopped || !watchActive || !pageHasFocus()) return", script)
+        self.assertIn("if (stopped || !watchActive || !pageIsVisible()) return", script)
         self.assertIn("if (!stopped) reconcile()", script)
         self.assertIn('data-watch-active="', template)
-        self.assertIn("organization_streams_live.js?v=20260905-1", template)
+        self.assertIn("organization_streams_live.js?v=20260906-1", template)
         self.assertIn("status.membershipRevision !== renderedMembershipRevision", script)
         self.assertIn('const sessionFilter = state.dataset.sessionFilter', script)
         self.assertIn('query.set("session", sessionFilter)', script)
         self.assertEqual(1, script.count("window.location.reload()"))
         self.assertIn("new Image()", script)
         self.assertIn("image.dataset.thumbnailRevision", script)
+
+    def test_visible_stream_dashboard_refreshes_without_window_focus(self):
+        script = Path("static/organization_streams_live.js").read_text()
+
+        self.assertIn("function pageIsVisible()", script)
+        self.assertIn("return !document.hidden", script)
+        self.assertNotIn("document.hasFocus()", script)
+        self.assertNotIn('window.addEventListener("blur"', script)
 
     def test_first_live_thumbnail_replaces_preview_pending_state(self):
         script = Path("static/organization_streams_live.js").read_text()
@@ -3197,7 +3205,10 @@ class OrganizationRouteFlowTest(unittest.TestCase):
                     transfer_request["uploadPath"],
                     headers={
                         "X-SAR-Token": device.token,
-                        "X-R2C-Filename": "A5-flight.mp4",
+                        "X-R2C-Filename": (
+                            "A5__0681f35f-2258-4bdb-a2e2-76dd54b0a8a2__"
+                            "A5-flight.tmp.mp4"
+                        ),
                         "Content-Type": "video/mp4",
                         "Content-Range": "bytes 0-9/24",
                     },
@@ -3220,7 +3231,10 @@ class OrganizationRouteFlowTest(unittest.TestCase):
                     transfer_request["uploadPath"],
                     headers={
                         "X-SAR-Token": device.token,
-                        "X-R2C-Filename": "A5-flight.mp4",
+                        "X-R2C-Filename": (
+                            "A5__0681f35f-2258-4bdb-a2e2-76dd54b0a8a2__"
+                            "A5-flight.tmp.mp4"
+                        ),
                         "Content-Type": "video/mp4",
                         "Content-Range": "bytes 10-23/24",
                     },
@@ -3820,6 +3834,79 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             self.store.authenticate_device_token(device.token)
         )
         self.assertIsNotNone(restored)
+
+    def test_authenticated_android_can_find_and_replace_prior_authorization(self):
+        organization = asyncio.run(
+            self.store.create_organization(
+                legal_name="North County Search and Rescue",
+                designator="NCSSAR",
+                admin_name="Primary Administrator",
+                admin_email="admin@ncssar.example",
+                postal_address="100 Rescue Way",
+                actor_id="platform-admin",
+                simulation=True,
+            )
+        )
+        owner = asyncio.run(self.store.activate_owner(
+            organization.designator,
+            organization.primary_admin_email,
+            "correct horse battery staple",
+        ))
+        campaign = asyncio.run(self.store.create_enrollment_campaign(
+            organization_id=organization.id,
+            label="Android replacement API",
+            created_by_user_id=owner.id,
+            expires_in_hours=24,
+            max_redemptions=2,
+        ))
+        previous = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="S11U",
+            device_model="Samsung SM-X930",
+            platform="android",
+            installation_id="11111111-2222-3333-4444-555555555555",
+            functionality_release=148,
+            authorized_user_id=owner.id,
+        ))
+        current = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="S11U",
+            device_model="Samsung SM-X930",
+            platform="android",
+            installation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            functionality_release=148,
+            authorized_user_id=owner.id,
+        ))
+        headers = {
+            "X-SAR-Token": current.token,
+            "X-R2C-Functionality-Release": "148",
+        }
+
+        candidates = self.client.get(
+            "/api/v1/device-authorization/replacement-candidates",
+            headers=headers,
+        )
+        self.assertEqual(200, candidates.status_code)
+        self.assertEqual(
+            [previous.id],
+            [item["credential_id"] for item in candidates.json()["candidates"]],
+        )
+
+        replaced = self.client.post(
+            "/api/v1/device-authorization/replace",
+            headers=headers,
+            json={"replacement_credential_id": previous.id},
+        )
+        self.assertEqual(200, replaced.status_code)
+        self.assertEqual(previous.device_name, replaced.json()["canonical_device_name"])
+        self.assertIsNone(asyncio.run(
+            self.store.authenticate_device_token(previous.token)
+        ))
+        active = asyncio.run(self.store.authenticate_device_token(current.token))
+        self.assertIsNotNone(active)
+        self.assertEqual(previous.device_name, active.device_name)
 
     def test_device_reauthentication_recovers_when_google_start_loses_next_query(self):
         organization = asyncio.run(
