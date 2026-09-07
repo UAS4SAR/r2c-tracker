@@ -1,4 +1,4 @@
-v1.4.87:
+v1.4.87: deployed
 * Support Android's on-device same-tablet confirmation after re-authentication: offer only older authorizations for the same organization member and exact device model, preserve the established tablet name, supersede the replaced authorization, transfer its stream and recording ownership, and audit the decision.
 * Let a re-enrolled tablet safely re-advertise an expired recording from the same organization so recordings in the selected archive folder return to the tablet Streams page without weakening live-stream ownership checks.
 * Use the original concise recording name for browser downloads instead of exposing tablet-private catalog identifiers or temporary-file suffixes.
