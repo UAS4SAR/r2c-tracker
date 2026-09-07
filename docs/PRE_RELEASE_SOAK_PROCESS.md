@@ -29,7 +29,7 @@ Agreed working process while mainline continues bugfixes.
 
 So `https://prerel.r2c-tracker.com/ncssar` works for TrackerUrl override, HTTPS API, and WS without an allowlist change.
 
-**Deep links / App Links: optional gap.** Android App Link intent-filter and Apple Associated Domains currently list apex `r2c-tracker.com` only. QR / Universal Links that open `https://prerel.r2c-tracker.com/...` may not auto-hand off into the app until those hosts are added (`prerel.r2c-tracker.com`, plus assetlinks / AASA on the prerel host). Soak via Developer Tools TrackerUrl does **not** need that.
+**Deep links / App Links: app host added.** RID2Caltopo `project/modularize-coordination` registers `prerel.r2c-tracker.com` in Android App Links and Apple Associated Domains (alongside apex). Once prerel is deployed, the same `/.well-known/assetlinks.json` and `apple-app-site-association` routes on the tracker serve verification for that host. Until DNS/TLS for prerel exists, soak can still use Developer Tools TrackerUrl.
 
 **Ops: moderate.** Separate Cloud Run (or revision) from prod; DNS + custom domain mapping + TLS for `prerel.r2c-tracker.com`; clone ops + control-plane DBs (at least NCSSAR-scoped); point control-plane / MediaMTX / env URLs at the prerel host. Do not share prod write paths.
 
