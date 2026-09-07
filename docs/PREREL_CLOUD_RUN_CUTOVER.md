@@ -210,6 +210,17 @@ Confirm prod `https://r2c-tracker.com/ncssar` still healthy and untouched.
 | `deploy_prerel.sh` wrapper | ~1 hour | Hard-guards against prod service name |
 | Smoke + first tablet enroll | ~1–2 hours | App Links verification may need a second pass |
 
+## Scripts (on `project/modularize-coordination`)
+
+```bash
+./setup_pilot_prerel.sh          # once: Cloud SQL, secrets, SA, bucket
+./scripts/refresh_prerel_databases.sh   # clone prod pilot DBs into prerel
+./deploy_prerel.sh 185           # deploy branch; use soak Android build code
+gcloud --configuration=r2c-tracker-pilot beta run domain-mappings create \
+  --service=r2c-tracker-prerel --domain=prerel.r2c-tracker.com \
+  --region=us-west1 --project=r2c-tracker-pilot
+```
+
 ## Explicitly out of scope for this sketch
 
 - Automating prerel inside `release_guard.py` / `deploy_candidate.sh`
