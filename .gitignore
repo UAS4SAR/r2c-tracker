@@ -1,7 +1,6 @@
 __pycache__/
 *~
 test.db
-*.json
 .DS_Store
 .env
 .env.*.local
@@ -9,6 +8,12 @@ test
 trackerLog.txt
 security-artifacts/
 .release-state/
+
+# Local dumps and generated JSON (do not blanket-ignore all *.json —
+# tests/docs fixtures must remain trackable).
+allServices.json
+**/detect-secrets.json
+**/*.cdx.json
 
 # Local editor lock and backup files
 *~
