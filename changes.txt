@@ -1,4 +1,4 @@
-v1.4.88:
+v1.4.88: deployed
 * Keep tablet coordination responsive while flight uploads wait on weather, process tracks, or write archives, using bounded workers that remain bounded when requests are cancelled.
 * Prevent slow tablet or browser connections from delaying healthy peers; serialize socket output, bound queued messages, and disconnect stalled clients so they can reconnect.
 * Keep upload serialization separate for each organization and release unused locks, so matching drone identities in different organizations do not unnecessarily block one another.
