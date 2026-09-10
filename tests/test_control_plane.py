@@ -1670,6 +1670,149 @@ class ControlPlaneStoreTest(unittest.TestCase):
         issued_event = asyncio.run(self.store.list_audit_events())[0]
         self.assertEqual([first.id], issued_event.details["superseded_credential_ids"])
 
+    def test_reenrollment_preserves_proven_active_same_installation_authorization(self):
+        organization = self.create_organization()
+        owner = asyncio.run(self.store.activate_owner(
+            organization.designator,
+            organization.primary_admin_email,
+            "correct horse battery staple",
+            self.now,
+        ))
+        campaign = asyncio.run(self.store.create_enrollment_campaign(
+            organization_id=organization.id,
+            label="Same tablet refresh",
+            created_by_user_id=owner.id,
+            expires_in_hours=24,
+            max_redemptions=3,
+            now=self.now,
+        ))
+        installation_id = "11111111-2222-3333-4444-555555555555"
+        first = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="Authorized iPad",
+            platform="ios",
+            installation_id=installation_id,
+            authorized_user_id=owner.id,
+            now=self.now,
+        ))
+
+        refreshed = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="Authorized iPad",
+            platform="ios",
+            installation_id=installation_id,
+            authorization_source_credential_id=first.id,
+            now=self.now + timedelta(minutes=5),
+        ))
+
+        self.assertEqual("active", refreshed.state)
+        self.assertIsNone(refreshed.reauth_requested_at)
+        self.assertIsNone(asyncio.run(self.store.authenticate_device_token(
+            first.token, self.now + timedelta(minutes=6)
+        )))
+        self.assertIsNotNone(asyncio.run(self.store.authenticate_device_token(
+            refreshed.token, self.now + timedelta(minutes=6)
+        )))
+        credentials = asyncio.run(self.store.list_device_credentials(
+            organization.id, now=self.now + timedelta(minutes=6)
+        ))
+        active = next(item for item in credentials if item.id == refreshed.id)
+        self.assertEqual(owner.id, active.authorized_user_id)
+        event = asyncio.run(self.store.list_audit_events())[0]
+        self.assertTrue(event.details["inherited_same_installation_authorization"])
+
+    def test_reenrollment_does_not_bypass_forced_same_installation_reauthentication(self):
+        organization = self.create_organization()
+        owner = asyncio.run(self.store.activate_owner(
+            organization.designator,
+            organization.primary_admin_email,
+            "correct horse battery staple",
+            self.now,
+        ))
+        campaign = asyncio.run(self.store.create_enrollment_campaign(
+            organization_id=organization.id,
+            label="Forced authentication",
+            created_by_user_id=owner.id,
+            expires_in_hours=24,
+            max_redemptions=3,
+            now=self.now,
+        ))
+        installation_id = "11111111-2222-3333-4444-555555555555"
+        first = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="Authorized iPad",
+            platform="ios",
+            installation_id=installation_id,
+            authorized_user_id=owner.id,
+            now=self.now,
+        ))
+        asyncio.run(self.store.require_device_reauthentication(
+            credential_id=first.id,
+            organization_id=organization.id,
+            actor_id=owner.id,
+            now=self.now + timedelta(minutes=1),
+        ))
+
+        refreshed = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="Authorized iPad",
+            platform="ios",
+            installation_id=installation_id,
+            authorization_source_credential_id=first.id,
+            now=self.now + timedelta(minutes=2),
+        ))
+
+        self.assertEqual("reauth_required", refreshed.state)
+        self.assertIsNotNone(refreshed.reauth_requested_at)
+        self.assertIsNone(asyncio.run(self.store.authenticate_device_token(
+            refreshed.token, self.now + timedelta(minutes=3)
+        )))
+        event = asyncio.run(self.store.list_audit_events())[0]
+        self.assertFalse(event.details["inherited_same_installation_authorization"])
+
+    def test_reenrollment_does_not_trust_installation_id_without_prior_token_proof(self):
+        organization = self.create_organization()
+        owner = asyncio.run(self.store.activate_owner(
+            organization.designator,
+            organization.primary_admin_email,
+            "correct horse battery staple",
+            self.now,
+        ))
+        campaign = asyncio.run(self.store.create_enrollment_campaign(
+            organization_id=organization.id,
+            label="No prior token proof",
+            created_by_user_id=owner.id,
+            expires_in_hours=24,
+            max_redemptions=3,
+            now=self.now,
+        ))
+        installation_id = "11111111-2222-3333-4444-555555555555"
+        asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="Authorized iPad",
+            platform="ios",
+            installation_id=installation_id,
+            authorized_user_id=owner.id,
+            now=self.now,
+        ))
+
+        unproven = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="Claimed iPad",
+            platform="ios",
+            installation_id=installation_id,
+            now=self.now + timedelta(minutes=1),
+        ))
+
+        self.assertEqual("reauth_required", unproven.state)
+        self.assertIsNotNone(unproven.reauth_requested_at)
+
     def test_active_device_can_replace_same_member_model_authorization(self):
         organization = self.create_organization()
         owner = asyncio.run(self.store.activate_owner(

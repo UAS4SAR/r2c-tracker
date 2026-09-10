@@ -2101,6 +2101,67 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             apple.json()["applinks"]["details"][0]["paths"],
         )
 
+    def test_redeem_reuses_authorization_only_with_active_prior_device_token(self):
+        now = datetime.now(UTC)
+        organization = asyncio.run(self.store.create_organization(
+            legal_name="North County Search and Rescue",
+            designator="NCSSAR",
+            admin_name="Primary Administrator",
+            admin_email="admin@ncssar.example",
+            postal_address="100 Rescue Way",
+            actor_id="platform-admin",
+            simulation=True,
+            now=now,
+        ))
+        owner = asyncio.run(self.store.activate_owner(
+            organization.designator,
+            organization.primary_admin_email,
+            "correct horse battery staple",
+            now,
+        ))
+        campaign = asyncio.run(self.store.create_enrollment_campaign(
+            organization_id=organization.id,
+            label="Same tablet refresh",
+            created_by_user_id=owner.id,
+            expires_in_hours=24,
+            max_redemptions=3,
+            now=now,
+        ))
+        installation_id = "11111111-2222-3333-4444-555555555555"
+        prior = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="Authorized iPad",
+            device_model="iPad8,6",
+            platform="ios",
+            installation_id=installation_id,
+            authorized_user_id=owner.id,
+            now=now,
+        ))
+        enrollment_token = self.tokens.enrollment_token(organization, campaign)
+        payload = {
+            "token": enrollment_token,
+            "device_name": "Authorized iPad",
+            "device_model": "iPad8,6",
+            "platform": "ios",
+            "installation_id": installation_id,
+            "functionality_release": 148,
+        }
+
+        with patch.object(main, "DEVICE_CREDENTIAL_ISSUANCE_ENABLED", True):
+            proven = self.client.post(
+                "/api/v1/device-enrollment/redeem",
+                json=payload,
+                headers={"X-R2C-Previous-Device-Token": prior.token},
+            )
+
+        self.assertEqual(200, proven.status_code)
+        self.assertEqual("active", proven.json()["credential"]["state"])
+        self.assertEqual("", proven.json()["credential"]["reauthentication_url"])
+        self.assertTrue(asyncio.run(main.authenticate_tracker_token(
+            proven.json()["tracker"]["api_key"]
+        )))
+
     def test_onboarding_activation_and_enrollment_qr_flow(self):
         platform_page = self.client.get(
             "/platform-admin/organizations",

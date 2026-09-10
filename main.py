@@ -11705,7 +11705,11 @@ async def replace_device_authorization(
 
 
 @app.post("/api/v1/device-enrollment/redeem")
-async def redeem_device_enrollment(payload: DeviceEnrollmentRedeemRequest):
+async def redeem_device_enrollment(
+        payload: DeviceEnrollmentRedeemRequest,
+        previous_device_token: Annotated[
+            Optional[str], Header(alias="X-R2C-Previous-Device-Token")
+        ] = None):
     if (
         not organization_site_ready()
         or not DEVICE_CREDENTIAL_ISSUANCE_ENABLED
@@ -11746,6 +11750,9 @@ async def redeem_device_enrollment(payload: DeviceEnrollmentRedeemRequest):
             )
         ):
             raise EnrollmentTokenError("Device enrollment code is invalid.")
+        _authenticated, previous_credential = await authenticate_tracker_session(
+            previous_device_token
+        )
         credential = await control_plane_store.issue_device_credential(
             campaign_id=campaign.id,
             organization_id=organization.id,
@@ -11754,6 +11761,11 @@ async def redeem_device_enrollment(payload: DeviceEnrollmentRedeemRequest):
             platform=payload.platform,
             installation_id=payload.installation_id,
             functionality_release=payload.functionality_release,
+            authorization_source_credential_id=(
+                previous_credential.id
+                if previous_credential is not None
+                else None
+            ),
         )
         reauthentication_url = ""
         if (

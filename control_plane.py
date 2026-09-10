@@ -6458,6 +6458,7 @@ class ControlPlaneStore:
         installation_id: str = "",
         functionality_release: int = 0,
         authorized_user_id: Optional[str] = None,
+        authorization_source_credential_id: Optional[str] = None,
         now: Optional[datetime] = None,
     ) -> IssuedDeviceCredential:
         issued_at = now or utc_now()
@@ -6499,6 +6500,38 @@ class ControlPlaneStore:
             organization = await session.get(Organization, organization_id)
             if organization is None:
                 raise ControlPlaneError("Organization not found.")
+            inherited_authorization = False
+            if (
+                authorized_user_id is None
+                and organization.device_access_policy == "member_verified"
+                and clean_installation_id
+                and authorization_source_credential_id is not None
+            ):
+                prior_credential = await session.get(
+                    DeviceCredential,
+                    authorization_source_credential_id,
+                )
+                if (
+                    prior_credential is not None
+                    and prior_credential.organization_id == organization_id
+                    and prior_credential.installation_id == clean_installation_id
+                    and prior_credential.platform == clean_platform
+                    and prior_credential.state == "active"
+                    and as_utc(prior_credential.expires_at) >= as_utc(issued_at)
+                    and prior_credential.authorized_user_id is not None
+                ):
+                    prior_user = await session.get(
+                        OrganizationUser,
+                        prior_credential.authorized_user_id,
+                    )
+                    if (
+                        prior_user is not None
+                        and prior_user.organization_id == organization_id
+                        and prior_user.state == "active"
+                        and "r2c_device" in prior_user.roles
+                    ):
+                        authorized_user_id = prior_user.id
+                        inherited_authorization = True
             if authorized_user_id is not None:
                 authorized_user = await session.get(
                     OrganizationUser, authorized_user_id
@@ -6591,6 +6624,9 @@ class ControlPlaneStore:
                             "installation_id": clean_installation_id,
                             "superseded_credential_ids": superseded_ids,
                             "authorized_user_id": authorized_user_id,
+                            "inherited_same_installation_authorization": (
+                                inherited_authorization
+                            ),
                             "functionality_release": functionality_release,
                             "member_authentication_required": (
                                 requires_member_authentication
