@@ -342,3 +342,45 @@ See [the pilot environment guide](PILOT_SETUP.md) and
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
+
+### Automated runtime checks with fresh PostgreSQL
+
+Run `.venv/bin/python scripts/test_runtime_postgres.py` to create a disposable
+local PostgreSQL cluster, separate operational/control-plane databases, two test
+organizations with enrolled devices, and a real local Tracker HTTP/WebSocket
+server. Set `PG_BIN` to the PostgreSQL server-tool directory if it is not on PATH
+(for example `/opt/homebrew/opt/postgresql@15/bin`). The runner requires local
+socket access and a non-root user. It tears down its databases and server on exit;
+it does not clone production or use inherited cloud/integration credentials.
+
+Checks cover idle database-connection recovery, bounded retention on PostgreSQL,
+authenticated uploads, cross-organization access denial, duplicate rejection,
+separate archive paths, and another organization's WebSocket coordination while
+weather processing is deliberately stalled. The existing security CI workflow
+also runs this suite. This is an initial system-test baseline; full browser
+onboarding/role journeys, real identity providers and managed video remain
+separate coverage to expand.
+
+`tests/test_runtime_hardening.py` additionally injects stalled sockets/storage,
+output backlog overflow, cancelled callers and upload-lock waiters. Run it with
+`.venv/bin/python -m unittest discover -s tests -p 'test_runtime_hardening.py'`.
+The normal unit-discovery command includes these tests.
+
+The single-process runtime now reserves four workers each for weather, archive
+I/O and flight-input processing. A cancelled caller does not release a running
+worker's capacity early. WebSocket output is serialized per connection with at
+most 16 pending messages and a two-second queue/send deadline; a stalled client
+is closed with 1013 and must reconnect. Healthy broadcast recipients proceed
+independently. Upload locks are scoped to organization and flight identity and
+removed when the last holder/waiter exits. Persisted zones, owners and sightings
+are cleaned in batches of at most 1,000 rows per table per pass; the default
+`R2C_DB_CLEANUP_SEC` is now 60 seconds. Existing explicit deployment overrides
+must be checked when releasing. Both database pools validate idle connections
+and recycle them after 300 seconds; this does not retry interrupted transactions.
+Operational SQL parameter echo is disabled.
+
+These changes improve the bounded single-process baseline. They do not make
+coordination safe across multiple processes or establish an organization-capacity
+SLA; keep the current instance limit until shared ownership and routing are
+implemented and tested. No prerelease host or mobile environment selector is
+required for these automated checks.

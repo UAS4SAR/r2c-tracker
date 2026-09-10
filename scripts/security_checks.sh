@@ -69,7 +69,7 @@ AUDIT_PID="$!"
 (
   echo "Static security analysis"
   "${PYTHON}" -m bandit -q -ll -r \
-    main.py control_plane.py enrollment.py faa_proxy.py \
+    main.py runtime_io.py control_plane.py enrollment.py faa_proxy.py \
     platform_admin.py platform_admin_auth.py platform_admin_identity.py \
     stripe_checkout.py turn_credentials.py \
     scripts/create_release_check_credential.py scripts/release_guard.py

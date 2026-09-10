@@ -1,3 +1,4 @@
+from runtime_io import WebSocketWriter
 import asyncio
 import json
 import math
@@ -41,6 +42,7 @@ def load_coordination_classes():
 
     namespace = {
         "asyncio": asyncio,
+        "WebSocketWriter": WebSocketWriter,
         "json": json,
         "math": math,
         "re": re,

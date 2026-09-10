@@ -1,4 +1,9 @@
 v1.4.88:
+* Keep tablet coordination responsive while flight uploads wait on weather, process tracks, or write archives, using bounded workers that remain bounded when requests are cancelled.
+* Prevent slow tablet or browser connections from delaying healthy peers; serialize socket output, bound queued messages, and disconnect stalled clients so they can reconnect.
+* Keep upload serialization separate for each organization and release unused locks, so matching drone identities in different organizations do not unnecessarily block one another.
+* Move expired coordination-state cleanup off the sighting path into indexed, bounded scheduled batches, and recover stale pooled database connections without logging routine SQL parameters.
+* Add fresh-PostgreSQL automated system checks for two simulated organizations, authenticated HTTP and WebSocket interactions, isolated archives, stalled weather, retention, and database reconnection; run them in CI alongside expanded runtime regression tests.
 * Preserve an already-authorized tablet's organization access when RID2Caltopo 2.2.7 imports enrollment again, using its active prior device credential and matching installation identity to avoid redundant sign-in.
 * Continue requiring sign-in for new installations and credentials that are expired, revoked, or explicitly awaiting reauthentication.
 

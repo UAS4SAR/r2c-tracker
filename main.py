@@ -50,6 +50,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from suncalc import get_times
 from google.cloud.sql.connector import Connector, IPTypes
 from faa_proxy import FaaNotamProxy, FaaProxyError
+from runtime_io import WebSocketWriter, run_bounded_sync
 from control_plane import (
     AUDIT_EVENT_CATEGORY_PREFIXES,
     AUDIT_EVENT_EXPORT_LIMIT,
@@ -659,7 +660,7 @@ R2C_CLIENT_SILENCE_SEC = max(
     R2C_HEARTBEAT_SEC * 2,
     int(os.environ.get("R2C_CLIENT_SILENCE_SEC", "60")),
 )
-R2C_DB_CLEANUP_SEC = int(os.environ.get("R2C_DB_CLEANUP_SEC", "86400"))
+R2C_DB_CLEANUP_SEC = int(os.environ.get("R2C_DB_CLEANUP_SEC", "60"))
 R2C_HEARTBEAT_ZONE_UPDATE_SEC = int(os.environ.get("R2C_HEARTBEAT_ZONE_UPDATE_SEC", "60"))
 R2C_IDLE_PARK_SEC = int(os.environ.get("R2C_IDLE_PARK_SEC", "30"))
 R2C_RECOMMENDED_APP_VERSION_CODE = int(os.environ.get("R2C_RECOMMENDED_APP_VERSION_CODE", "0") or "0")
@@ -717,7 +718,8 @@ filepath = __file__
 filedate = datetime.fromtimestamp(os.path.getmtime(filepath))
 print(f"{filepath} version is {filedate}")
 
-_flight_submission_locks: dict[str, asyncio.Lock] = {}
+_flight_submission_locks: dict[tuple[Optional[str], str], asyncio.Lock] = {}
+_flight_submission_lock_users = {}
 _flight_submission_locks_guard = asyncio.Lock()
 
 
@@ -732,15 +734,24 @@ def normalize_flight_submission_key(remote_id: Optional[str], sar_id: Optional[s
 
 
 @asynccontextmanager
-async def serialized_flight_submission(remote_id: Optional[str], sar_id: Optional[str] = None):
-    key = normalize_flight_submission_key(remote_id, sar_id)
+async def serialized_flight_submission(remote_id: Optional[str], sar_id: Optional[str] = None,
+                                      organization_id: Optional[str] = None):
+    key = (organization_id, normalize_flight_submission_key(remote_id, sar_id))
     async with _flight_submission_locks_guard:
         lock = _flight_submission_locks.get(key)
         if lock is None:
             lock = asyncio.Lock()
             _flight_submission_locks[key] = lock
-    async with lock:
-        yield
+    # Count waiters before acquiring: cancellation must not create a second lock.
+    _flight_submission_lock_users[key] = _flight_submission_lock_users.get(key, 0) + 1
+    try:
+        async with lock:
+            yield
+    finally:
+        _flight_submission_lock_users[key] -= 1
+        if _flight_submission_lock_users[key] == 0:
+            del _flight_submission_lock_users[key]
+            del _flight_submission_locks[key]
 
 
 def load_recent_versions(limit: int = 10):
@@ -915,7 +926,9 @@ class R2CRecentSighting(Base):
     alt_m = Column(Float, default=0.0)
     received_ms = Column(BigInteger, default=0)
 
-engine = create_async_engine(DB_URL, echo=True)
+engine = create_async_engine(
+    DB_URL, echo=False, pool_pre_ping=True, pool_recycle=300,
+)
 
 
 async def migrate_r2c_coordination_schema():
@@ -1042,6 +1055,16 @@ async def migrate_r2c_coordination_schema():
                 await conn.execute(text("ALTER TABLE r2c_zone_state ADD COLUMN app_version TEXT DEFAULT ''"))
             if "app_version_code" not in columns:
                 await conn.execute(text("ALTER TABLE r2c_zone_state ADD COLUMN app_version_code INTEGER DEFAULT 0"))
+
+        for table_name, age_column in (
+            ("r2c_recent_sighting", "received_ms"),
+            ("r2c_zone_state", "last_seen_ms"),
+            ("r2c_drone_owner_state", "lease_expire_ms"),
+        ):
+            await conn.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_{table_name}_retention "
+                f"ON {table_name} ({age_column}, id)"
+            ))
 
 
 async def migrate_flight_archive_schema():
@@ -1297,6 +1320,7 @@ class OrganizationStreamEventHub:
 
     def __init__(self):
         self._lock = asyncio.Lock()
+        self._writer = WebSocketWriter()
         self._connections: dict[
             str, dict[WebSocket, tuple[str, str]]
         ] = {}
@@ -1327,12 +1351,9 @@ class OrganizationStreamEventHub:
     async def broadcast(self, organization_id: str):
         async with self._lock:
             connections = tuple(self._connections.get(organization_id, {}))
-        failed = []
-        for websocket in connections:
-            try:
-                await websocket.send_json({"type": "streams_changed"})
-            except Exception:
-                failed.append(websocket)
+        failed = await self._writer.broadcast(
+            connections, json.dumps({"type": "streams_changed"}),
+        )
         for websocket in failed:
             await self.disconnect(organization_id, websocket)
 
@@ -1439,6 +1460,7 @@ class R2CCoordinationHub:
 
     def __init__(self):
         self._lock = asyncio.Lock()
+        self._writer = WebSocketWriter()
         self._connections: dict[WebSocket, R2CZoneConnection] = {}
         self._connections_by_device_credential_id: dict[
             str, R2CZoneConnection
@@ -2209,7 +2231,7 @@ class R2CCoordinationHub:
         if not remote_id or event_key in zone.sent_confirmed_event_keys or zone.websocket is None:
             return
         try:
-            await zone.websocket.send_text(json.dumps(event))
+            await self._writer.send_text(zone.websocket, json.dumps(event))
             zone.sent_confirmed_event_keys.add(event_key)
         except Exception as e:
             logger.warning("drone_confirmed send failed for %s/%s: %s", event.get("mapId", ""), zone.zone_id, e)
@@ -2217,8 +2239,9 @@ class R2CCoordinationHub:
     async def _broadcast_drone_confirmation(self, organization_id: str, map_id: str, event: dict):
         async with self._lock:
             recipients = [zone for zone in self._zones_by_map.get(self._scope_key(organization_id, map_id), {}).values() if zone.websocket is not None]
-        for zone in recipients:
-            await self._send_drone_confirmation_to_zone(zone, event)
+        await asyncio.gather(*(
+            self._send_drone_confirmation_to_zone(zone, event) for zone in recipients
+        ))
 
     async def _send_recent_drone_confirmations(self, websocket: WebSocket, organization_id: str, map_id: str, now_ms: int):
         async with self._lock:
@@ -2292,7 +2315,7 @@ class R2CCoordinationHub:
             )
         for connection in connections:
             try:
-                await connection.websocket.send_json({
+                await self._writer.send_json(connection.websocket, {
                     "type": "reauthentication_required",
                     "clearManagedConfiguration": False,
                     "reauthenticationUrl": reauthentication_url,
@@ -2501,14 +2524,14 @@ class R2CCoordinationHub:
                 snapshot_json=snapshot_json,
                 diff_json=json.dumps(diff, separators=(",", ":"), sort_keys=True),
             )
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "organization_config_snapshot_ack",
                 "requestId": request_id,
                 "accepted": True,
             }))
         except (ControlPlaneError, ValueError) as exc:
             logger.warning("Organization config response rejected: request=%s error=%s", request_id, exc)
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "organization_config_snapshot_ack",
                 "requestId": request_id,
                 "accepted": False,
@@ -2534,7 +2557,7 @@ class R2CCoordinationHub:
                 credential.id,
                 result.state,
             )
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "recording_download_decision_ack", "requestId": result.id,
                 "accepted": True, "state": result.state,
             }))
@@ -2544,7 +2567,7 @@ class R2CCoordinationHub:
                 request_id,
                 exc,
             )
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "recording_download_decision_ack", "requestId": request_id,
                 "accepted": False, "error": str(exc),
             }))
@@ -2567,7 +2590,7 @@ class R2CCoordinationHub:
                 conn.remote_video_control_enabled = remote_control_enabled
                 conn.video_inventory_reconciled = True
         if credential is None or control_plane_store is None:
-            await websocket.send_text(
+            await self._writer.send_text(websocket,
                 json.dumps(
                     {
                         "type": "video_stream_advertisement_ack",
@@ -2656,7 +2679,7 @@ class R2CCoordinationHub:
             if first_inventory_after_connect
             else ()
         )
-        await websocket.send_text(
+        await self._writer.send_text(websocket,
             json.dumps(
                 {
                     "type": "video_stream_advertisement_ack",
@@ -2736,7 +2759,7 @@ class R2CCoordinationHub:
                     payload.get("estimatedUplinkBps", 0) or 0
                 ),
             )
-            await websocket.send_text(
+            await self._writer.send_text(websocket,
                 json.dumps(
                     {
                         "type": "video_preflight_result_ack",
@@ -2747,7 +2770,7 @@ class R2CCoordinationHub:
                 )
             )
         except (ControlPlaneError, TypeError, ValueError) as exc:
-            await websocket.send_text(
+            await self._writer.send_text(websocket,
                 json.dumps(
                     {
                         "type": "video_preflight_result_ack",
@@ -2781,7 +2804,7 @@ class R2CCoordinationHub:
                 device_credential_id=credential.id,
                 device_answer_sdp=str(payload.get("sdp", "") or ""),
             )
-            await websocket.send_text(
+            await self._writer.send_text(websocket,
                 json.dumps(
                     {
                         "type": "video_preflight_answer_ack",
@@ -2791,7 +2814,7 @@ class R2CCoordinationHub:
                 )
             )
         except (ControlPlaneError, TypeError, ValueError) as exc:
-            await websocket.send_text(
+            await self._writer.send_text(websocket,
                 json.dumps(
                     {
                         "type": "video_preflight_answer_ack",
@@ -2831,7 +2854,7 @@ class R2CCoordinationHub:
                     payload.get("selectedBitrateBps", 0) or 0
                 ),
             )
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "video_stream_decision_ack",
                 "requestId": result.id,
                 "accepted": True,
@@ -2855,7 +2878,7 @@ class R2CCoordinationHub:
                 getattr(credential, "id", ""),
                 exc,
             )
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "video_stream_decision_ack",
                 "requestId": request_id,
                 "accepted": False,
@@ -2891,14 +2914,14 @@ class R2CCoordinationHub:
                     or "e_nosuch_stream"
                 ),
             )
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "video_stream_unavailable_ack",
                 "requestId": result.id,
                 "accepted": True,
                 "state": result.state,
             }))
         except (ControlPlaneError, TypeError, ValueError) as exc:
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "video_stream_unavailable_ack",
                 "requestId": request_id,
                 "accepted": False,
@@ -2918,7 +2941,7 @@ class R2CCoordinationHub:
                 device_credential_id=credential.id,
                 device_answer_sdp=str(payload.get("sdp", "") or ""),
             )
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "video_media_answer_ack",
                 "requestId": result.request_id,
                 "accepted": True,
@@ -2936,7 +2959,7 @@ class R2CCoordinationHub:
                 getattr(credential, "id", ""),
                 exc,
             )
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "video_media_answer_ack",
                 "requestId": request_id,
                 "accepted": False,
@@ -2956,14 +2979,14 @@ class R2CCoordinationHub:
                 device_credential_id=credential.id,
                 reason=str(payload.get("reason", "device_terminated") or "device_terminated"),
             )
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "video_stream_terminated_ack",
                 "requestId": result.id,
                 "accepted": True,
                 "state": result.state,
             }))
         except (ControlPlaneError, TypeError, ValueError) as exc:
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "video_stream_terminated_ack",
                 "requestId": request_id,
                 "accepted": False,
@@ -3042,7 +3065,7 @@ class R2CCoordinationHub:
             )
             return False
         try:
-            await websocket.send_text(
+            await self._writer.send_text(websocket,
                 json.dumps(
                     {
                         "type": "video_preflight_offer",
@@ -3082,7 +3105,7 @@ class R2CCoordinationHub:
         if websocket is None:
             return False
         try:
-            await websocket.send_text(
+            await self._writer.send_text(websocket,
                 json.dumps(
                     {
                         "type": "video_thumbnail_preview",
@@ -3117,7 +3140,7 @@ class R2CCoordinationHub:
             )
             return False
         try:
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "video_media_offer",
                 "requestId": exchange.request_id,
                 "streamSessionId": exchange.stream_session_id,
@@ -3169,7 +3192,7 @@ class R2CCoordinationHub:
         if websocket is None:
             return False
         try:
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "video_stream_request",
                 "requestId": request_id,
                 "requesterEmail": requester_email,
@@ -3204,7 +3227,7 @@ class R2CCoordinationHub:
         if websocket is None:
             return False
         try:
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "organization_config_snapshot_request",
                 "requestId": request_id,
             }))
@@ -3224,7 +3247,7 @@ class R2CCoordinationHub:
         if websocket is None:
             return False
         try:
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 "type": "recording_download_request",
                 "requestId": item.id,
                 "requesterEmail": item.requester_email,
@@ -3258,7 +3281,7 @@ class R2CCoordinationHub:
         if websocket is None:
             return False
         try:
-            await websocket.send_text(
+            await self._writer.send_text(websocket,
                 json.dumps(
                     {
                         "type": "video_stream_request_cancelled",
@@ -3400,7 +3423,7 @@ class R2CCoordinationHub:
             hello_ack["recommendedAppVersionCode"] = recommended_version_code
         if update_url:
             hello_ack["updateUrl"] = update_url
-        await websocket.send_text(json.dumps(hello_ack))
+        await self._writer.send_text(websocket, json.dumps(hello_ack))
         await self.broadcast_zone_update(organization_id, map_id)
         await self._send_recent_drone_confirmations(websocket, organization_id, map_id, now_ms)
         await self._send_recent_peer_traffic(websocket, organization_id, map_id, now_ms)
@@ -3608,7 +3631,7 @@ class R2CCoordinationHub:
             payload.get("seq"),
             owner_lease_expire_ms,
         )
-        await websocket.send_text(json.dumps({
+        await self._writer.send_text(websocket, json.dumps({
             "type": "heartbeat_ack",
             "serverTime": now_ms,
             "mapId": map_id,
@@ -3755,7 +3778,7 @@ class R2CCoordinationHub:
             float(payload.get("altM", 0.0) or 0.0)
         )
         try:
-            await target.websocket.send_text(json.dumps(relay))
+            await self._writer.send_text(target.websocket, json.dumps(relay))
         except Exception as e:
             logger.warning("relay_sighting failed for %s/%s: %s", map_id, remote_id, e)
 
@@ -3956,7 +3979,7 @@ class R2CCoordinationHub:
             "receivedTs": now_ms,
         }
         try:
-            await websocket.send_text(json.dumps({
+            await self._writer.send_text(websocket, json.dumps({
                 key: value for key, value in schedule.items() if value is not None
             }))
         except Exception as exc:
@@ -3966,16 +3989,7 @@ class R2CCoordinationHub:
                 from_zone_id,
                 exc,
             )
-        for zone in recipients:
-            try:
-                await zone.websocket.send_text(text)
-            except Exception as exc:
-                logger.warning(
-                    "peer traffic broadcast failed for %s/%s: %s",
-                    map_id,
-                    zone.zone_id,
-                    exc,
-                )
+        await self._writer.broadcast([zone.websocket for zone in recipients], text)
         logger.info(
             "r2c peer_traffic_shadow: map=%s remote_id=%s source=%s from_zone=%s transport_age_ms=%s alt_age_ms=%s msl_alt_age_ms=%s candidate_recipients=%s recipients=%s alt_state=%s incident_pad_ft=%s nearest_distance_m=%s scheduling_pad_ft=%s shadow_interval_ms=%s",
             map_id,
@@ -4025,7 +4039,7 @@ class R2CCoordinationHub:
                 )
             ]
         for report in reports:
-            await websocket.send_text(json.dumps(report))
+            await self._writer.send_text(websocket, json.dumps(report))
 
     async def _handle_drone_confirmed(self, websocket: WebSocket, payload: dict):
         remote_id = payload.get("remoteId", "")
@@ -4162,11 +4176,12 @@ class R2CCoordinationHub:
         text = json.dumps(payload)
         async with self._lock:
             recipients = [zone for zone in self._zones_by_map.get(self._scope_key(organization_id, map_id), {}).values() if zone.websocket is not None]
-        for zone in recipients:
-            try:
-                await zone.websocket.send_text(text)
-            except Exception as e:
-                logger.warning("broadcast failed for %s/%s: %s", map_id, zone.zone_id, e)
+        failed = await self._writer.broadcast(
+            [zone.websocket for zone in recipients], text,
+        )
+        if failed:
+            logger.warning("broadcast retired %s stalled sockets for %s/%s",
+                           len(failed), organization_id, map_id)
 
     async def _load_state(self):
         now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
@@ -4252,26 +4267,22 @@ class R2CCoordinationHub:
         deleted_owner_count = 0
         deleted_sighting_count = 0
         async with AsyncSessionLocal() as session:
-            stale_zones = await session.execute(
-                select(R2CZoneState).where(R2CZoneState.last_seen_ms < stale_zone_cutoff_ms)
-            )
-            for state in stale_zones.scalars().all():
-                await session.delete(state)
-                deleted_zone_count += 1
-
-            stale_owners = await session.execute(
-                select(R2CDroneOwnerState).where(R2CDroneOwnerState.lease_expire_ms < now_ms)
-            )
-            for state in stale_owners.scalars().all():
-                await session.delete(state)
-                deleted_owner_count += 1
-
-            stale_sightings = await session.execute(
-                select(R2CRecentSighting).where(R2CRecentSighting.received_ms < stale_sighting_cutoff_ms)
-            )
-            for state in stale_sightings.scalars().all():
-                await session.delete(state)
-                deleted_sighting_count += 1
+            counts = []
+            for model, predicate in (
+                (R2CZoneState, R2CZoneState.last_seen_ms < stale_zone_cutoff_ms),
+                (R2CDroneOwnerState, R2CDroneOwnerState.lease_expire_ms < now_ms),
+                (R2CRecentSighting, R2CRecentSighting.received_ms < stale_sighting_cutoff_ms),
+            ):
+                # One bounded batch per table and pass, including backlog after downtime.
+                ids = select(model.id).where(predicate).order_by(
+                    predicate.left, model.id,
+                ).limit(1000)
+                result = await session.execute(
+                    delete(model).where(model.id.in_(ids), predicate),
+                    execution_options={"synchronize_session": False},
+                )
+                counts.append(result.rowcount)
+            deleted_zone_count, deleted_owner_count, deleted_sighting_count = counts
 
             await session.commit()
         deleted_preflight_count = 0
@@ -4603,10 +4614,6 @@ class R2CCoordinationHub:
                 alt_m=alt_m,
                 received_ms=now_ms
             ))
-            cutoff_ms = now_ms - (R2C_LEASE_SEC * 1000 * 4)
-            result = await session.execute(select(R2CRecentSighting).where(R2CRecentSighting.received_ms < cutoff_ms))
-            for sighting in result.scalars().all():
-                await session.delete(sighting)
             await session.commit()
 
     @staticmethod
@@ -5213,7 +5220,33 @@ async def meter_organization_usage_by_id(
             organization_id,
         )
 
-async def archive_flight_log(
+_weather_workers = anyio.CapacityLimiter(4)
+_archive_workers = anyio.CapacityLimiter(4)
+_processing_workers = anyio.CapacityLimiter(4)
+
+
+async def lookup_flight_weather(ts_sec, lat, lon):
+    return await run_bounded_sync(
+        get_weather, ts_sec, lat, lon, limiter=_weather_workers,
+    )
+
+
+def _flight_log_size(path):
+    try:
+        return os.path.getsize(path)
+    except FileNotFoundError:
+        return 0
+
+
+async def archive_flight_log(title, flight_timestamp, geojson_data, flight_id,
+                             organization_designator=None):
+    return await run_bounded_sync(
+        _write_flight_log, title, flight_timestamp, geojson_data, flight_id,
+        organization_designator, limiter=_archive_workers,
+    )
+
+
+def _write_flight_log(
     title,
     flight_timestamp,
     geojson_data,
@@ -5238,6 +5271,12 @@ async def archive_flight_log(
 
 
 async def extract_flight_inputs_from_geojson(data: dict):
+    return await run_bounded_sync(
+        _extract_flight_inputs_from_geojson, data, limiter=_processing_workers,
+    )
+
+
+def _extract_flight_inputs_from_geojson(data: dict):
     start_ts, end_ts = None, None
     prop = None
     coordinate_list = None
@@ -5325,6 +5364,9 @@ async def create_flight_and_archive(
     end_time = flight_inputs["end_time"]
     remote_id = normalize_remote_id(spec.get('rid'))
 
+    # Do not hold a database connection while waiting on the weather worker.
+    weather = await lookup_flight_weather(flight_inputs["start_ts_sec"], flight_inputs["start_lat"], flight_inputs["start_lng"])
+
     result = await find_overlap(
         db,
         start_time,
@@ -5342,7 +5384,6 @@ async def create_flight_and_archive(
         )
 
     timeofday_str = get_time_of_day(flight_inputs["start_ts_sec"], flight_inputs["start_lat"], flight_inputs["start_lng"])
-    weather = get_weather(flight_inputs["start_ts_sec"], flight_inputs["start_lat"], flight_inputs["start_lng"])
 
     data['r2c-tracker'] = flight_inputs["processing_comments"]
     new_flight = Flight(
@@ -5991,6 +6032,7 @@ async def upload(
     async with serialized_flight_submission(
             flight_inputs["spec"].get("rid"),
             flight_inputs["spec"].get("sar_id"),
+            organization_id=credential.organization_id if credential else None,
     ):
         new_flight, archive_path = await create_flight_and_archive(
             db,
@@ -6000,7 +6042,9 @@ async def upload(
         )
         await db.commit()
 
-    archive_size = os.path.getsize(archive_path) if os.path.exists(archive_path) else 0
+    archive_size = await run_bounded_sync(
+        _flight_log_size, archive_path, limiter=_archive_workers,
+    )
     await meter_organization_usage(
         credential,
         compute_units=Decimal("1"),
@@ -12657,7 +12701,7 @@ async def organization_stream_events(
     # leave the compatibility request open: an abandoned browser tab must not
     # keep a Cloud Run instance active.
     await websocket.accept()
-    await websocket.send_json({
+    await r2c_hub._writer.send_json(websocket, {
         "type": "ready",
         "active": False,
         "revision": "bounded-status-refresh-required",
@@ -12687,7 +12731,7 @@ async def serve_r2c_websocket(
             requested_at=credential_record.reauth_requested_at.isoformat(),
         )
         await websocket.accept()
-        await websocket.send_json({
+        await r2c_hub._writer.send_json(websocket, {
             "type": "reauthentication_required",
             "clearManagedConfiguration": False,
             "reauthenticationUrl": reauthentication_url,
@@ -12781,7 +12825,7 @@ async def serve_r2c_websocket(
                         R2C_MIN_TRACKER_FUNCTIONALITY_RELEASE > 0
                         and functionality_release < R2C_MIN_TRACKER_FUNCTIONALITY_RELEASE
                     ):
-                        await websocket.send_json({
+                        await r2c_hub._writer.send_json(websocket, {
                             "type": "upgrade_required",
                             "minimumFunctionalityRelease": (
                                 R2C_MIN_TRACKER_FUNCTIONALITY_RELEASE

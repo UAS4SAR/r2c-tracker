@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements.lock
 
 # Copy the application code
 COPY main.py .
+COPY runtime_io.py .
 COPY faa_proxy.py .
 COPY control_plane.py .
 COPY subscription_plans.py .

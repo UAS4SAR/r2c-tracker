@@ -8,7 +8,7 @@ from typing import Optional
 def load_submission_lock_helpers():
     main_path = pathlib.Path(__file__).resolve().parents[1] / "main.py"
     source = main_path.read_text()
-    start = source.index("_flight_submission_locks: dict[str, asyncio.Lock] = {}")
+    start = source.index("_flight_submission_locks:")
     end = source.index("\n\ndef load_recent_versions")
     snippet = source[start:end]
     namespace = {

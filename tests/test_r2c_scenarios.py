@@ -1,3 +1,4 @@
+from runtime_io import WebSocketWriter
 import asyncio
 import json
 import math
@@ -26,6 +27,7 @@ def load_coordination_classes():
     manager = types.SimpleNamespace(broadcast=lambda *args, **kwargs: asyncio.sleep(0))
     namespace = {
         "asyncio": asyncio,
+        "WebSocketWriter": WebSocketWriter,
         "json": json,
         "math": math,
         "re": re,

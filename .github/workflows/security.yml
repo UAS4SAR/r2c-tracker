@@ -29,6 +29,10 @@ jobs:
           PYTHON: python
           SECURITY_OUTPUT_DIR: security-artifacts
         run: ./scripts/security_checks.sh
+      - name: Install PostgreSQL for isolated runtime checks
+        run: sudo apt-get update && sudo apt-get install -y postgresql
+      - name: Run fresh-database HTTP and WebSocket checks
+        run: PG_BIN="$(pg_config --bindir)" python scripts/test_runtime_postgres.py
       - name: Retain SBOM and scan output
         if: always()
         uses: actions/upload-artifact@v7
