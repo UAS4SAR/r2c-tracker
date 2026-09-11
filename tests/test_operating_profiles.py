@@ -77,7 +77,7 @@ class OperatingProfilesTest(unittest.IsolatedAsyncioTestCase):
         app = FastAPI()
         import main
         from starlette.middleware.sessions import SessionMiddleware
-        app.add_middleware(SessionMiddleware, secret_key="test-session-key")
+        app.add_middleware(SessionMiddleware, secret_key="test-session-key")  # pragma: allowlist secret
         templates = main.templates
         install_routes(app, {"require_organization_user": require_user, "control_plane_store": self.store,
             "templates": templates, "csrf_token": lambda *args: "valid-token", "verify_csrf": verify_csrf,
