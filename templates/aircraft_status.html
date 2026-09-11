@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}{{ organization.designator }} Aircraft status{% endblock %}
+{% block content %}
+<div class="dashboard-container" id="aircraft-service-page" data-organization="{{ organization.designator|lower }}" data-actor="{{ actor.id }}" data-token="{{ form_token }}">
+  <p id="service-upload-status" role="status"></p>
+  <div id="service-pending-reports"></div>
+  <h1>Aircraft status</h1>
+  {% if not has_equipment_manager %}<p>No active equipment manager is assigned. Reports will be saved, but no equipment-manager email can be sent. Ask a member administrator to assign equip_manager.</p>{% endif %}
+  <p>Reports are team readiness records. An unreported aircraft has no recorded service confirmation.</p>
+  {% for drone in aircraft %}
+  {% set latest = drone.history[0] if drone.history else {} %}
+  <section class="section">
+    <h2>{{ drone.get('ownerCallsign') or drone.get('owner') }} — {{ drone.model }}</h2>
+    <p>RID: {{ drone.remoteId }}{% if drone.get('readiness') %} · Serial: {{ drone.readiness.serialNumber }} · FAA registration: {{ drone.readiness.registrationNumber }}{% endif %}</p>
+    <p><strong>{{ {'in_service':'In service', 'out_of_service':'OUT OF SERVICE'}.get(latest.get('status'), 'Not yet reported') }}</strong></p>
+    {% if latest %}<p>{{ latest.note }}</p><p>{{ latest.username }} · {{ latest.receivedAt }}</p>{% endif %}
+    {% if 'r2c_device' in actor.roles %}
+    <details><summary>Report service status as {{ actor.display_name }}</summary>
+      <form class="aircraft-service-form" method="post" action="/{{ organization.designator|lower }}/aircraft/service">
+        <input type="hidden" name="actor_id" value="{{ actor.id }}">
+        <input type="hidden" name="form_token" value="{{ form_token }}">
+        <input type="hidden" name="remote_id" value="{{ drone.remoteId }}">
+        <input type="hidden" name="event_id" value="{{ new_event_id() }}">
+        <input type="hidden" name="revision" value="{{ latest.get('revision', 0) }}">
+        <p><label>Status <select name="status" required><option value="out_of_service">Out of service</option><option value="in_service">In service</option></select></label></p>
+        <p><label>Problem or remediation note<br><textarea name="note" rows="3" maxlength="4000" required></textarea></label></p>
+        <p><label>If reporting a problem, will you address it yourself? <select name="self_remediation"><option value="">Select</option><option value="yes">Yes</option><option value="no">No</option></select></label></p>
+        <button type="submit">Submit report</button>
+      </form>
+    </details>
+    {% endif %}
+    <details><summary>Service history ({{ drone.history|length }})</summary>
+      {% for event in drone.history %}<p><strong>{{ event.status|replace('_', ' ') }}</strong> — {{ event.note }}<br>{{ event.username }} · {{ event.receivedAt }}{% if event.status == 'out_of_service' %}<br>Reporter will address: {{ 'Yes' if event.selfRemediation else 'No' }}{% endif %}</p>{% endfor %}
+    </details>
+  </section>
+  {% else %}<p>No aircraft in the currently published organization configuration.</p>{% endfor %}
+</div>
+<script src="/static/aircraft-service.js" defer></script>
+{% endblock %}

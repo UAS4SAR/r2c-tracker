@@ -842,6 +842,10 @@ class GmailApiPlatformAdminEmailSender:
         except Exception as exc:
             raise PlatformAdminAuthError(failure_message) from exc
 
+    def send_equipment_status(self, *, recipient, event, designator):
+        self._send(_equipment_status_message(self.from_address, recipient, event, designator),
+                   "Equipment notification could not be sent.")
+
     def send_password_setup(self, *, recipient: str, setup_url: str) -> None:
         message = _password_setup_message(self.from_address, recipient, setup_url)
         self._send(message, "Administrator email could not be sent.")
@@ -1028,6 +1032,16 @@ class SmtpPlatformAdminEmailSender:
             and self.from_address
             and (not self.username or self.password)
         )
+
+    def send_equipment_status(self, *, recipient, event, designator):
+        if not self.is_configured:
+            raise PlatformAdminAuthError("Email is not configured.")
+        message = _equipment_status_message(self.from_address, recipient, event, designator)
+        with smtplib.SMTP(self.host, self.port, timeout=15) as smtp:
+            smtp.starttls(context=ssl.create_default_context())
+            if self.username:
+                smtp.login(self.username, self.password)
+            smtp.send_message(message)
 
     def send_password_setup(self, *, recipient: str, setup_url: str) -> None:
         if not self.is_configured:
@@ -1376,3 +1390,20 @@ class SmtpPlatformAdminEmailSender:
             raise PlatformAdminAuthError(
                 "Extended-beta allowance email could not be sent."
             ) from exc
+
+
+def _equipment_status_message(from_address, recipient, event, designator):
+    message = EmailMessage()
+    message["From"] = from_address
+    message["To"] = recipient
+    message["Subject"] = f"{designator}: aircraft {event['status'].replace('_', ' ')}"
+    message["Message-ID"] = f"<equipment-{event['eventId']}@r2c-tracker>"
+    intent = ""
+    if event["status"] == "out_of_service":
+        intent = "Reporter will address the problem: " + ("Yes" if event["selfRemediation"] else "No")
+    message.set_content(f"Aircraft RID: {event['remoteId']}\n"
+                        f"Reported by: {event['actorName']} ({event['username']})\n"
+                        f"Received: {event['receivedAt']}\n{intent}\n\n{event['note']}\n\n"
+                        f"Review history (organization sign-in required): "
+                        f"{os.environ.get('CONTROL_PLANE_PUBLIC_URL', 'https://r2c-tracker.com').rstrip('/')}/{designator.lower()}/aircraft")
+    return message

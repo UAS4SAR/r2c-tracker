@@ -883,7 +883,7 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         )
         self.assertEqual(200, current.status_code, current.text)
         self.assertEqual(approved.version_ms, current.json()["versionMs"])
-        self.assertEqual(normalized, current.json()["config"])
+        self.assertEqual(main.aircraft_readiness.with_aircraft_identities(normalized), current.json()["config"])
         self.assertEqual("private, no-store", current.headers["cache-control"])
 
     def test_managed_config_snapshot_excludes_organization_policy_and_device_secrets(self):
@@ -923,6 +923,14 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             device_name="Ken's A5 Pro", platform="android",
             authorized_user_id=owner.id,
         ))
+        # Pre-readiness enrollment may have no associated member. A config admin
+        # can still request a read from that device and separately approve it.
+        async def legacy_device_enrollment():
+            async with self.store.sessions() as session:
+                row = await session.get(DeviceCredential, device.id)
+                row.authorized_user_id = None
+                await session.commit()
+        asyncio.run(legacy_device_enrollment())
         config_admin = asyncio.run(self.store.add_user(
             organization_id=organization.id,
             display_name="Configuration Administrator",
@@ -1065,7 +1073,7 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             self.store.get_current_organization_config_release(organization.id)
         )
         self.assertEqual("Verified initial aircraft", release.comment)
-        self.assertEqual(snapshot["droneSpecs"], current.json()["config"]["droneSpecs"])
+        self.assertEqual(main.aircraft_readiness.with_aircraft_identities(snapshot)["droneSpecs"], current.json()["config"]["droneSpecs"])
 
         history = self.client.get("/ncssar/admin/configuration")
         discarded = self.client.post(

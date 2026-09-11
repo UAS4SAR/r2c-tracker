@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Flight {{ flight.id }} readiness record{% endblock %}
+{% block content %}
+<div class="dashboard-container">
+  <h1>Flight {{ flight.id }} — RPIC, equipment &amp; payload</h1>
+  <p>{{ flight.start_time }} · RID {{ flight.remote_id }} · {{ flight.sar_id }}</p>
+  <p>Corrections are recorded after the flight. They preserve the original report and do not establish what was checked before takeoff.</p>
+  <p>Takeoff weight: <strong>{{ total_weight|string + ' grams' if total_weight is not none else 'Incomplete — one or more weights are unknown' }}</strong></p>
+  <form method="post">
+    <input type="hidden" name="form_token" value="{{ form_token }}">
+    <input type="hidden" name="revision" value="{{ revision }}">
+    <p><label>RPIC <select name="pilot_member_id"><option value="">Keep reported attribution</option>{% for pilot in pilots %}<option value="{{ pilot.memberId }}">{{ pilot.callsign }} — {{ pilot.name }}</option>{% endfor %}</select></label></p>
+    <p>Reported RPIC: {{ record.get('pilot', {}).get('callsign', 'Unresolved') }}</p>
+    <p><label>Takeoff payload description <input name="payload_description" maxlength="1000" value="{{ record.get('payloadDescription', '') }}"></label></p>
+    <p><label>Takeoff payload weight (grams) <input name="payload_weight" type="number" step="any" min="0" max="100000" value="{{ record.get('payloadWeightGrams') if record.get('payloadWeightGrams') is not none else '' }}"></label></p>
+    {% if record.get('aircraft') %}
+    <input type="hidden" name="configuration_present" value="yes">
+    <p><label>Historical base weight (grams) <input name="base_weight" type="number" step="any" min="0" max="100000" value="{{ record.aircraft.get('baseWeightGrams') if record.aircraft.get('baseWeightGrams') is not none else '' }}"></label></p>
+    <p>Accessories carried on this flight:</p>
+    {% for accessory in record.aircraft.get('accessories', []) %}<p><label><input type="checkbox" name="selected_accessories" value="{{ accessory.id }}"{% if accessory.id in record.get('selectedAccessories', []) %} checked{% endif %}> {{ accessory.name }} ({{ accessory.get('weightGrams') if accessory.get('weightGrams') is not none else 'unknown' }} grams)</label></p>{% endfor %}
+    {% endif %}
+    <p>Operating profile: {{ record.get("operatingProfile", {}).get("profile", {}).get("name", "Not reported") }}. Original profile changes remain in the history.</p>
+    <p><label>Correct historical operating profile <select name="operating_profile_correction"><option value="">Keep recorded selection</option>{% for p in profile_versions %}<option value="{{ p.id }}@{{ p.version }}">{{ p.name }} — version {{ p.version }}</option>{% endfor %}</select></label></p>
+    <p>Uses the saved conditions for that version. The reason below and attributed before/after history are required. The original in-flight timeline remains available.</p>
+    <p><label>Post-flight checklist amendment (optional)<br><textarea name="checklist_amendment" rows="2" maxlength="4000"></textarea></label></p>
+    <p>Include contents and packaging. Blank means unknown; use the weight of the actual item or document the basis of an estimate.</p>
+    <p><label>Correction reason / measurement basis<br><textarea name="reason" maxlength="4000" rows="3" required></textarea></label></p>
+    <button type="submit">Save correction</button>
+  </form>
+  <details><summary>Current flight configuration</summary><pre>{{ record|tojson(indent=2) }}</pre></details>
+  <details><summary>Original submitted values</summary><pre>{{ original|tojson(indent=2) }}</pre></details>
+  <details><summary>Correction history ({{ history|length }})</summary>{% for event in history %}<p>{{ event.username }} · {{ event.correctedAt }} — {{ event.reason }}</p><pre>{{ event|tojson(indent=2) }}</pre>{% endfor %}</details>
+  <p><a href="/{{ organization.designator|lower }}/admin/flights">Back to flight records</a></p>
+</div>
+{% endblock %}

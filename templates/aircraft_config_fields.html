@@ -1,0 +1,16 @@
+{% macro aircraft_fields(drone) %}
+<dl>
+  <dt>Owner name</dt><dd>{{ drone.get('ownerName', '') }}</dd>
+  <dt>Owner callsign</dt><dd>{{ drone.get('ownerCallsign', drone.get('owner', '')) }}</dd>
+  <dt>Organization</dt><dd>{{ drone.get('org', '') }}</dd>
+  {% set details = drone.get('readiness', {}) %}
+  <dt>Aircraft serial number</dt><dd>{{ details.get('serialNumber') or 'Not recorded' }}</dd>
+  <dt>FAA registration</dt><dd>{{ details.get('registrationNumber') or 'Not recorded' }}</dd>
+  <dt>Base weight</dt><dd>{{ details.get('baseWeightGrams')|string + ' grams' if details.get('baseWeightGrams') is not none else 'Unknown' }}</dd>
+  <dt>Included in base weight</dt><dd>{{ details.get('baseWeightIncludes') or 'Not recorded' }}</dd>
+  <dt>Required equipment</dt><dd>{{ details.get('requiredEquipment') or 'Not recorded' }}</dd>
+  <dt>Air traffic monitoring equipment</dt><dd>{{ details.get('monitoringEquipment') or 'Not recorded' }}</dd>
+  <dt>Accessories / batteries</dt>
+  <dd><ul>{% for item in details.get('accessories', []) %}<li>{{ item.name }} — {{ item.get('weightGrams')|string + ' grams' if item.get('weightGrams') is not none else 'Unknown weight' }}{% if item.get('required') %} · Required{% endif %}{% if item.get('group') %} · Choose-one group: {{ item.group }}{% endif %}</li>{% else %}<li>None recorded</li>{% endfor %}</ul></dd>
+</dl>
+{% endmacro %}

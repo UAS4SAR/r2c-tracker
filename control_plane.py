@@ -43,6 +43,7 @@ from subscription_plans import SUBSCRIPTION_PLAN_BY_CODE
 DESIGNATOR_RE = re.compile(r"^[A-Z][A-Z0-9]{1,15}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 ROLE_DESCRIPTIONS = {
+    "equip_manager": "Receive organization aircraft service-status notifications.",
     "organization_owner": (
         "Full organization authority, including policies, members, enrollment, "
         "configuration releases, flight records, and billing information."

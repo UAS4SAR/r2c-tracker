@@ -112,6 +112,7 @@
 
   {% set navigation = template_navigation(request, organization_page_designator | default(None)) %}
   <main>
+    {% if navigation.scope == "organization" %}<p><a href="/{{ navigation.designator }}/aircraft">Aircraft status</a> · <a href="/{{ navigation.designator }}/admin/flights">Records administration</a></p>{% endif %}
     <a class="site-home" href="{{ navigation.home_url }}">
       <img src="/static/app-icon-orange.png" alt="R2C Tracker icon">
       <span>R2C Tracker</span>

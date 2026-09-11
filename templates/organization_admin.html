@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "aircraft_config_fields.html" import aircraft_fields %}
 {% block title %}{{ organization.designator }} Organization Administration{% endblock %}
 {% block extra_head %}
 <style>
@@ -361,6 +362,7 @@
     <section class="org-panel wide" id="organization-config"
              data-config-proposal-state="{{ config_proposal.state if config_proposal else 'none' }}">
       <h2>RID2Caltopo organization configuration</h2>
+      <p><a href="/{{ organization.designator|lower }}/admin/operating-profiles">Manage operating profiles and default authority</a></p>
       <p>
         Pull the verified CalTopo credentials and drone list from a connected
         RID2Caltopo device. Nothing is distributed until you review and approve it.
@@ -414,11 +416,11 @@
           Mutual-aid CalTopo credentials: <strong>{{ config_proposal.diff.mutualAidCaltopo }}</strong>
         </p>
         <h3>Added drones</h3>
-        <ul>{% for drone in config_proposal.diff.addedDrones %}<li>{{ drone.remoteId }}{% if drone.mappedId %} → {{ drone.mappedId }}{% endif %} · {{ drone.model }}</li>{% else %}<li>None</li>{% endfor %}</ul>
+        <ul>{% for drone in config_proposal.diff.addedDrones %}<li>{{ drone.remoteId }}{% if drone.mappedId %} → {{ drone.mappedId }}{% endif %} · {{ drone.model }}{{ aircraft_fields(drone) }}</li>{% else %}<li>None</li>{% endfor %}</ul>
         <h3>Removed drones</h3>
-        <ul>{% for drone in config_proposal.diff.removedDrones %}<li>{{ drone.remoteId }}{% if drone.mappedId %} → {{ drone.mappedId }}{% endif %} · {{ drone.model }}</li>{% else %}<li>None</li>{% endfor %}</ul>
+        <ul>{% for drone in config_proposal.diff.removedDrones %}<li>{{ drone.remoteId }}{% if drone.mappedId %} → {{ drone.mappedId }}{% endif %} · {{ drone.model }}{{ aircraft_fields(drone) }}</li>{% else %}<li>None</li>{% endfor %}</ul>
         <h3>Changed drones</h3>
-        <ul>{% for change in config_proposal.diff.changedDrones %}<li>{{ change.after.remoteId }}: {{ change.before.mappedId }} · {{ change.before.model }} · {{ change.before.owner }} → {{ change.after.mappedId }} · {{ change.after.model }} · {{ change.after.owner }}</li>{% else %}<li>None</li>{% endfor %}</ul>
+        <ul>{% for change in config_proposal.diff.changedDrones %}<li>{{ change.after.remoteId }}: {{ change.before.mappedId }} · {{ change.before.model }} · {{ change.before.owner }} → {{ change.after.mappedId }} · {{ change.after.model }} · {{ change.after.owner }}<details open><summary>Compare aircraft configuration</summary><h4>Before</h4>{{ aircraft_fields(change.before) }}<h4>After</h4>{{ aircraft_fields(change.after) }}</details></li>{% else %}<li>None</li>{% endfor %}</ul>
       </div>
       <form class="org-form" method="post"
             action="/{{ organization.designator|lower }}/admin/organization-config/approve">
@@ -684,7 +686,7 @@
             <input type="email" name="email" maxlength="320" required value="{{ member.email }}">
           </label>
           <div class="role-grid span-all">
-            {% for role in ["billing_admin", "config_admin", "user_admin", "r2c_device", "records_admin", "records_viewer", "video_requester"] %}
+            {% for role in ["billing_admin", "config_admin", "user_admin", "r2c_device", "records_admin", "records_viewer", "equip_manager", "video_requester"] %}
             <label><input type="checkbox" name="roles" value="{{ role }}"{% if role in member.roles %} checked{% endif %}> {{ role }} {{ role_help(role) }}</label>
             {% endfor %}
           </div>
@@ -712,6 +714,18 @@
         </form>
         {% endif %}
         {% endif %}
+        {% set pilot = pilot_profiles.get(member.id, {}) %}
+        <h4>Pilot qualifications</h4>
+        <form class="org-form two-column" method="post" action="/{{ organization.designator|lower }}/members/{{ member.id }}/pilot">
+          <input type="hidden" name="form_token" value="{{ pilot_form_token }}">
+          <label>RPIC callsign <input name="callsign" maxlength="160" value="{{ pilot.get('callsign', '') }}"></label>
+          <label>Part 107 certificate number <input name="certificateNumber" maxlength="160" value="{{ pilot.get('certificateNumber', '') }}"></label>
+          <label>Original certificate date <input type="date" name="certificateDate" value="{{ pilot.get('certificateDate', '') }}"></label>
+          <label>Initial knowledge test / training date <input type="date" name="initialKnowledgeDate" value="{{ pilot.get('initialKnowledgeDate', '') }}"></label>
+          <label>Latest recurrent-training date <input type="date" name="recurrentTrainingDate" value="{{ pilot.get('recurrentTrainingDate', '') }}"></label>
+          <label>Pilot status <select name="status">{% for value, label in [('unrecorded','Not recorded'),('active','Active'),('inactive','Inactive')] %}<option value="{{ value }}"{% if pilot.get('status','unrecorded') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+          <button type="submit">Save pilot qualifications</button>
+        </form>
       </div>
       {% endfor %}
       <h3>Add member</h3>
@@ -727,7 +741,7 @@
           <input type="email" name="email" maxlength="320" required>
         </label>
         <div class="role-grid span-all">
-          {% for role in ["billing_admin", "config_admin", "user_admin", "r2c_device", "records_admin", "records_viewer", "video_requester"] %}
+          {% for role in ["billing_admin", "config_admin", "user_admin", "r2c_device", "records_admin", "records_viewer", "equip_manager", "video_requester"] %}
           <label><input type="checkbox" name="roles" value="{{ role }}"> {{ role }} {{ role_help(role) }}</label>
           {% endfor %}
         </div>

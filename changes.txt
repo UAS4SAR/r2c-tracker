@@ -1,3 +1,10 @@
+v1.4.89:
+* Add organization-managed operating profiles with versioned authority documents, applicability, briefing conditions, and an explicit organization default; distribute them to compatible Android and Apple apps for offline use without changing older-device configuration compatibility.
+* Preserve each flight's reported operating authority and time-stamped changes, with advisory review flags and attributed records-administrator corrections using exact historical profile versions.
+* Add aircraft readiness, accessory and payload weights, member pilot qualifications, and service-status reporting with equipment-manager notifications and retryable offline drafts.
+* Let administrators review aircraft readiness fields in organization configuration changes, preserve fields older apps cannot represent, and export original flight readiness and correction history.
+* Retain short flights and stationary hovers, including missions with unresolved pilot details, so incomplete information does not prevent recording.
+
 v1.4.88: deployed
 * Keep tablet coordination responsive while flight uploads wait on weather, process tracks, or write archives, using bounded workers that remain bounded when requests are cancelled.
 * Prevent slow tablet or browser connections from delaying healthy peers; serialize socket output, bound queued messages, and disconnect stalled clients so they can reconnect.

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Operating profiles{% endblock %}
+{% block content %}
+<style>
+.operating-profile-editor input:not([type=hidden]), .operating-profile-editor select, .operating-profile-editor textarea { box-sizing: border-box; width: 100%; padding: 8px; font: inherit; }
+.operating-profile-editor input[type=checkbox] { width: auto; }
+.operating-profile-editor label { display: block; margin: 8px 0; }
+.operating-profile-editor fieldset { margin: 14px 0; border: 1px solid #c8d6e2; border-radius: 8px; }
+.operating-profile-editor button { padding: 12px 18px; font: inherit; }
+</style>
+<div class="dashboard-container operating-profile-editor">
+<h1>Operating profiles — {{ organization.legal_name }}</h1>
+<p>Profiles brief the RPIC or the VO entering information for the RPIC. Selection does not grant operating authority. Airspace authorization remains separate. Missing or expired information never stops mission recording.</p>
+<p><a href="/{{ organization.designator|lower }}/admin/operating-profiles">Add profile</a> · <a href="/{{ organization.designator|lower }}/admin/configuration">Organization configuration</a></p>
+<ul>{% for p in catalog.profiles %}<li><a href="?profile={{ p.id|urlencode }}">{{ p.name }}</a> · version {{ p.version }}{% if p.id == catalog.defaultProfileId %} · organization default{% endif %}</li>{% endfor %}</ul>
+<form method="post">
+<input type="hidden" name="form_token" value="{{ form_token }}"><input type="hidden" name="revision" value="{{ catalog.revision }}"><input type="hidden" name="id" value="{{ profile.id }}">
+<p><label>Display name <input name="name" value="{{ profile.name }}" maxlength="200" required></label></p>
+<p><label>Operating authority <select name="authorityType">{% for key, label in [('part107', 'Standard Part 107'), ('part107_waiver', 'Part 107 operational waiver'), ('public_aircraft_coa', 'Public aircraft / COA — review authority and qualifications'), ('unresolved', 'Other / details pending')] %}<option value="{{ key }}"{% if key == profile.authorityType %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label></p>
+{% for key, label in [('waiverNumber', 'Waiver / authority document number'), ('holder', 'Authority holder'), ('document', 'Document link or reference')] %}<p><label>{{ label }} <input name="{{ key }}" value="{{ profile.get(key, '') }}"></label></p>{% endfor %}
+{% for key, label in [('effectiveFrom', 'Effective from'), ('effectiveUntil', 'Effective through')] %}<p><label>{{ label }} <input type="date" name="{{ key }}" value="{{ profile.get(key, '') }}"></label></p>{% endfor %}
+<h2>Applicability</h2>
+<p>Choose the pilots and aircraft covered by the source document. No selections means no restriction is recorded; it does not establish applicability.</p>
+<fieldset><legend>Pilots</legend>{% for member in pilot_choices %}<label><input type="checkbox" name="pilotIds" value="{{ member.id }}"{% if member.id in profile.get('pilotIds', []) %} checked{% endif %}> {{ member.display_name }} — {{ member.email }}</label>{% endfor %}
+{% for id in profile.get('pilotIds', []) if id not in pilot_choices|map(attribute='id')|list %}<label><input type="checkbox" name="pilotIds" value="{{ id }}" checked> Previously selected member (not in the current roster)</label>{% endfor %}</fieldset>
+<fieldset><legend>Aircraft</legend>{% for aircraft in aircraft_choices %}<label><input type="checkbox" name="aircraftIds" value="{{ aircraft.readiness.recordId }}"{% if aircraft.readiness.recordId in profile.get('aircraftIds', []) %} checked{% endif %}> {{ aircraft.mappedId }} — {{ aircraft.remoteId }}</label>{% endfor %}
+{% set known_aircraft = aircraft_choices|map(attribute='readiness.recordId')|list %}
+{% for id in profile.get('aircraftIds', []) if id not in known_aircraft %}<label><input type="checkbox" name="aircraftIds" value="{{ id }}" checked> Previously selected aircraft (not in the current fleet)</label>{% endfor %}</fieldset>
+<p><label>Applicable incident / CalTopo map IDs (separate with commas) <input name="locationIds" value="{{ profile.get('locationIds', [])|join(', ') }}"></label></p>
+<h2>Briefing conditions</h2><p>Transcribe verified source provisions. Include RPIC range, altitude reference and limits, VO, equipment, and RTH conditions where relevant. Keep AGL, ATO, obstacle-relative height, and horizontal distances distinct. These are readable advisory checklist items, not automatically verified operating limits.</p>
+{% for item in profile.conditions + [{}, {}, {}, {}, {}] %}<fieldset><legend>Condition {{ loop.index }}</legend>
+<label>Condition <textarea name="condition_text" rows="2" maxlength="4000">{{ item.get('text', '') }}</textarea></label>
+<label>Source provision <input name="condition_source" value="{{ item.get('source', '') }}"></label>
+<label>Topic <input name="condition_kind" value="{{ item.get('kind', 'briefing') }}" placeholder="RPIC range, VO, equipment, altitude, RTH"></label>
+<label>Unit <input name="condition_unit" value="{{ item.get('unit', '') }}" placeholder="feet, meters"></label>
+<label>Reference <input name="condition_reference" value="{{ item.get('reference', '') }}" placeholder="AGL, ATO, obstacle-relative, horizontal"></label></fieldset>{% endfor %}
+<p><label>Organization default <select name="defaultProfileId">{% for p in [standard, other] + catalog.profiles + ([profile] if profile.id not in catalog.profiles|map(attribute='id')|list else []) %}<option value="{{ p.id }}"{% if p.id == catalog.defaultProfileId %} selected{% endif %}>{{ p.name or 'This new profile' }}</option>{% endfor %}</select></label></p>
+<button type="submit">Save new version and default</button>
+</form></div>{% endblock %}

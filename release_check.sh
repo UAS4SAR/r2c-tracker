@@ -53,7 +53,7 @@ export TRACKER_PORT="${PORT}"
 export PORT="${PORT}"
 
 echo "==> Python syntax check"
-"${PYTHON}" -m py_compile main.py runtime_io.py faa_proxy.py platform_admin_identity.py \
+"${PYTHON}" -m py_compile main.py aircraft_readiness.py flight_readiness_records.py operating_profiles.py runtime_io.py faa_proxy.py platform_admin_identity.py \
   platform_admin_auth.py scripts/create_release_check_credential.py \
   scripts/release_guard.py
 

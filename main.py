@@ -1,4 +1,6 @@
 import os
+import aircraft_readiness
+import flight_readiness_records
 import io
 import re
 import sys
@@ -1226,10 +1228,15 @@ async def lifespan(app: FastAPI):
         billing_notification_task = asyncio.create_task(
             billing_notification_worker(billing_notification_stop)
         )
+    equipment_mail_stop = asyncio.Event()
+    equipment_mail_task = asyncio.create_task(aircraft_readiness.mail_worker(
+        control_plane_store, platform_admin_email_sender, equipment_mail_stop, logger))
     await r2c_hub.start()
     yield
     # Shutdown Clean up resources (if needed)
     await r2c_hub.stop()
+    equipment_mail_stop.set()
+    await equipment_mail_task
     billing_notification_stop.set()
     recording_spool_cleanup_stop.set()
     audit_retention_cleanup_stop.set()
@@ -1271,7 +1278,7 @@ async def protect_control_plane_pages(request: Request, call_next):
     organization_page = re.fullmatch(
         r"/[a-z0-9]{2,16}/(?:"
         r"activate(?:/(?:google|microsoft))?|login|forgot-password|reset-password|"
-        r"(?:google|microsoft)/start|logout|admin(?:/.*)?|settings|members|"
+        r"(?:google|microsoft)/start|logout|admin(?:/.*)?|settings|members(?:/.*)?|aircraft(?:/.*)?|"
         r"streams(?:/status|/[^/]+/request|/requests/[^/]+/"
         r"(?:cancel|preflight/(?:offer|status)))?|"
         r"enroll(?:/credential)?|"
@@ -2507,12 +2514,18 @@ class R2CCoordinationHub:
         try:
             if credential is None or control_plane_store is None:
                 raise ControlPlaneError("Organization device credential required.")
+            # This is a read requested by an organization config administrator.
+            # Completion below binds the response to that request and source device;
+            # publishing still requires the administrator's separate approval.
             _snapshot, snapshot_json = validated_organization_config_snapshot(
                 payload.get("config")
             )
             current = await control_plane_store.get_current_organization_config_release(
                 credential.organization_id
             )
+            _snapshot = aircraft_readiness.preserve_legacy_aircraft_fields(
+                aircraft_readiness.with_aircraft_identities(current.snapshot) if current else {}, _snapshot)
+            _snapshot, snapshot_json = validated_organization_config_snapshot(_snapshot)
             diff = organization_config_diff(
                 current.snapshot if current is not None else None,
                 _snapshot,
@@ -4183,6 +4196,13 @@ class R2CCoordinationHub:
             logger.warning("broadcast retired %s stalled sockets for %s/%s",
                            len(failed), organization_id, map_id)
 
+    async def notify_aircraft_readiness_changed(self, organization_id: str):
+        async with self._lock:
+            recipients = [socket for socket, connection in self._connections.items()
+                if connection.device_credential is not None
+                and connection.device_credential.organization_id == organization_id]
+        await self._writer.broadcast(recipients, json.dumps({"type": "aircraft_readiness_changed"}))
+
     async def _load_state(self):
         now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
         async with AsyncSessionLocal() as session:
@@ -4970,6 +4990,11 @@ def parse_prop(prop):
         if match:
             sar_id = match.group(1)
             uas = match.group(2)
+        # New archives carry an explicit flight pilot; a routing label is not RPIC evidence.
+        readiness = r2c.get("flightReadiness")
+        if isinstance(readiness, dict):
+            pilot = readiness.get("pilot", {})
+            sar_id = str(pilot.get("callsign", "")) if isinstance(pilot, dict) else ""
     else:  # title should be available on legacy tracks: 
         title = prop.get('title')
         if not sar_id and title:
@@ -5303,8 +5328,8 @@ def _extract_flight_inputs_from_geojson(data: dict):
     start_ts_sec = round(start_ts / 1000.0, 2)
     end_ts_sec = round(end_ts / 1000.0, 2)
     duration_sec = end_ts_sec - start_ts_sec
-    if duration_sec < 60:
-        raise HTTPException(400, f"{duration_sec} second flight is too brief.")
+    if duration_sec < 0:
+        raise HTTPException(400, "Flight end time precedes start time.")
 
     spec = parse_prop(prop)
     distance = spec.get('distance_mi')
@@ -5322,8 +5347,6 @@ def _extract_flight_inputs_from_geojson(data: dict):
 
     if not distance or filter_count > 0:
         distance = compute_distance(coords)
-    if distance < 0.1:
-        raise HTTPException(400, f"{distance} mi flight is too brief.")
 
     start_time = datetime.fromtimestamp(start_ts_sec, tz=timezone.utc).replace(tzinfo=None)
     localized_start_time = localize_flight_time(start_time, start_lat, start_lng)
@@ -5347,7 +5370,7 @@ def _extract_flight_inputs_from_geojson(data: dict):
         "start_lat": start_lat,
         "start_lng": start_lng,
         "start_ts_sec": start_ts_sec,
-        "duration_hrs": round((end_ts_sec - start_ts_sec) / 3600.0, 3),
+        "duration_hrs": duration_sec / 3600.0,
         "processing_comments": processing_comments,
     }
 
@@ -5420,6 +5443,7 @@ async def create_flight_and_archive(
         credential.designator if credential else None,
     )
     new_flight.archive_relpath = archive_relpath
+    await flight_readiness_records.preserve_submission(control_plane_store, new_flight, data)
     return new_flight, archive_path
 
 
@@ -5472,6 +5496,7 @@ async def create_imported_flight_and_archive(
         organization_designator,
     )
     new_flight.archive_relpath = archive_relpath
+    await flight_readiness_records.preserve_submission(control_plane_store, new_flight, data)
     return new_flight, archive_path
 
 
@@ -5908,7 +5933,7 @@ def validated_organization_config_snapshot(snapshot: object) -> tuple[dict, str]
     allowed = {
         "configSchemaVersion", "sourcePlatform", "sourceAppVersion",
         "sourceAppBuild", "organizationCaltopoEnc", "mutualAidCaltopoEnc",
-        "droneSpecs",
+        "droneSpecs", "aircraftSchemaVersion",
     }
     if set(snapshot) - allowed:
         raise ValueError("Organization configuration contains unsupported fields.")
@@ -5934,7 +5959,9 @@ def validated_organization_config_snapshot(snapshot: object) -> tuple[dict, str]
         raise ValueError("Drone specifications are missing or exceed the limit.")
     normalized_drones = []
     remote_ids = set()
-    allowed_drone_fields = {"remoteId", "mappedId", "org", "model", "owner"}
+    aircraft_ids = set()
+    aircraft_serials = set()
+    allowed_drone_fields = {"remoteId", "mappedId", "org", "model", "owner", "ownerName", "ownerCallsign", "readiness"}
     for item in drones:
         if not isinstance(item, dict) or set(item) - allowed_drone_fields:
             raise ValueError("A drone specification contains unsupported fields.")
@@ -5947,6 +5974,20 @@ def validated_organization_config_snapshot(snapshot: object) -> tuple[dict, str]
             raise ValueError("Drone remote IDs must be present and unique.")
         if any(len(value) > 200 for value in normalized.values()):
             raise ValueError("A drone specification field is too long.")
+        for key in ("ownerName", "ownerCallsign"):
+            if key in item:
+                normalized[key] = aircraft_readiness.bounded_text(item[key], key)
+        if "readiness" in item:
+            normalized["readiness"] = aircraft_readiness.validate_aircraft_details(item["readiness"])
+            normalized["readiness"]["recordId"] = aircraft_readiness.aircraft_key(normalized)
+            if normalized["readiness"]["recordId"] in aircraft_ids:
+                raise ValueError("Aircraft record identities must be unique.")
+            aircraft_ids.add(normalized["readiness"]["recordId"])
+            serial = normalized["readiness"]["serialNumber"].casefold()
+            if serial and serial in aircraft_serials:
+                raise ValueError("Aircraft serial numbers must be unique.")
+            if serial:
+                aircraft_serials.add(serial)
         remote_ids.add(remote_id.casefold())
         normalized_drones.append(normalized)
     normalized_snapshot = {
@@ -5958,6 +5999,8 @@ def validated_organization_config_snapshot(snapshot: object) -> tuple[dict, str]
         "mutualAidCaltopoEnc": ma_enc,
         "droneSpecs": sorted(normalized_drones, key=lambda item: item["remoteId"].casefold()),
     }
+    if snapshot.get("aircraftSchemaVersion") == 1:
+        normalized_snapshot["aircraftSchemaVersion"] = 1
     encoded = json.dumps(normalized_snapshot, separators=(",", ":"), sort_keys=True)
     if len(encoded.encode("utf-8")) > ORG_CONFIG_MAX_BYTES:
         raise ValueError("Organization configuration exceeds the 256 KiB limit.")
@@ -6002,7 +6045,7 @@ async def current_organization_config(
     if release is None:
         return Response(status_code=204, headers={"Cache-Control": "private, no-store"})
     return JSONResponse(
-        {"versionMs": release.version_ms, "config": release.snapshot},
+        {"versionMs": release.version_ms, "config": aircraft_readiness.with_aircraft_identities(release.snapshot)},
         headers={"Cache-Control": "private, no-store"},
     )
 
@@ -9111,6 +9154,8 @@ async def _organization_admin_page(
             "organization_user": user,
             "organization_users": users,
             "organization_user_by_id": {member.id: member for member in users},
+            "pilot_profiles": {p["memberId"]: p for p in await aircraft_readiness.pilots(control_plane_store, organization.id)},
+            "pilot_form_token": csrf_token(request, "organization_pilot_profile"),
             "enrollment_campaigns": campaigns,
             "active_enrollment_campaigns": tuple(
                 campaign for campaign in campaigns if campaign.state == "active"
@@ -9286,7 +9331,7 @@ async def require_organization_records_admin(
 
 def organization_admin_csv_response(
         flights,
-        designator: str) -> Response:
+        designator: str, readiness_records=None) -> Response:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
@@ -9294,7 +9339,7 @@ def organization_admin_csv_response(
         "Map Id", "Start Time", "End Time", "Start Lattitude",
         "Start Longitude", "Hours", "Distance (mi)", "Temp (F)",
         "Rel Humidity (%)", "Dew Pt (F)", "Precip (in)", "Wind (mph)",
-        "Gusts (mph)", "Cloud Cover (%)", "Time Of Day", "Archive Path",
+        "Gusts (mph)", "Cloud Cover (%)", "Time Of Day", "Archive Path", "Readiness record and corrections",
     ])
     for flight in flights:
         writer.writerow([
@@ -9320,6 +9365,7 @@ def organization_admin_csv_response(
             flight.cloudcvr_pct,
             flight.timeofday,
             flight.archive_relpath or "",
+            json.dumps((readiness_records or {}).get(flight.id, {})),
         ])
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"r2c_{designator.lower()}_audit_full_{timestamp}.csv"
@@ -9334,6 +9380,7 @@ def organization_admin_csv_response(
 async def organization_flight_admin(
         request: Request,
         designator: str,
+        needs_completion: bool = False,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         db: AsyncSession = Depends(get_db)):
@@ -9347,15 +9394,21 @@ async def organization_flight_admin(
         end_date,
     ).order_by(Flight.start_time.desc())
     if not start_date and not end_date:
-        stmt = stmt.limit(50)
+        stmt = stmt.limit(200 if needs_completion else 50)
     result = await db.execute(stmt)
+    flights = result.scalars().all()
+    readiness_records = await flight_readiness_records.export_records(control_plane_store, flights)
+    if needs_completion:
+        flights = [flight for flight in flights if flight_readiness_records.needs_completion(readiness_records.get(flight.id, {}).get("current", {}))]
     base_url = f"/{organization.designator.lower()}/admin/flights"
     return templates.TemplateResponse(
         request=request,
         name="admin.html",
         context={
             "request": request,
-            "flights": result.scalars().all(),
+            "flights": flights,
+            "needs_completion": needs_completion,
+            "readiness_records": readiness_records,
             "start_date": start_date.isoformat() if start_date else "",
             "end_date": end_date.isoformat() if end_date else "",
             "export_url": organization_flight_admin_url(
@@ -9449,9 +9502,10 @@ async def organization_flight_export(
         end_date,
     ).order_by(Flight.start_time)
     result = await db.execute(stmt)
+    flights = result.scalars().all()
     return organization_admin_csv_response(
-        result.scalars().all(),
-        organization.designator,
+        flights, organization.designator,
+        await flight_readiness_records.export_records(control_plane_store, flights),
     )
 
 
@@ -13167,3 +13221,10 @@ async def organization_public_dashboard(
         end_date=end_date,
         organization=organization,
     )
+
+
+aircraft_readiness.install_routes(app, globals())
+import operating_profiles
+operating_profiles.install_routes(app, globals())
+
+flight_readiness_records.install_routes(app, globals())

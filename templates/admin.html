@@ -166,6 +166,7 @@
 {% block content %}
   <div class="admin-page">
     <h1>{{ admin_heading | default("Administrative Flight Log Editor") }}</h1>
+    {% if organization_page_designator is defined %}<p><a href="{{ admin_base_url }}?needs_completion=true">Records needing RPIC or weight completion (latest 200)</a> · <a href="{{ admin_base_url }}">All recent records</a></p>{% endif %}
     <a href="{{ dashboard_url | default('/') }}">← Back to Public Dashboard</a>
     <hr>
 
@@ -219,6 +220,7 @@
               <td class="meta-col">
                 {% if flight.archive_relpath and flight_log_base_url %}
                   <a href="{{ flight_log_base_url }}/{{ flight.id }}/log">Download log</a>
+                  {% if organization_page_designator is defined %}<br><a href="{{ admin_base_url }}/{{ flight.id }}/readiness">RPIC, equipment &amp; payload</a>{% endif %}
                 {% else %}
                   <span aria-label="No archived flight log">Not archived</span>
                 {% endif %}
