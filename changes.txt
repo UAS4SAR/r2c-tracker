@@ -1,4 +1,4 @@
-v1.4.89:
+v1.4.89: deployed
 * Add organization-managed operating profiles with versioned authority documents, applicability, briefing conditions, and an explicit organization default; distribute them to compatible Android and Apple apps for offline use without changing older-device configuration compatibility.
 * Preserve each flight's reported operating authority and time-stamped changes, with advisory review flags and attributed records-administrator corrections using exact historical profile versions.
 * Add aircraft readiness, accessory and payload weights, member pilot qualifications, and service-status reporting with equipment-manager notifications and retryable offline drafts.
