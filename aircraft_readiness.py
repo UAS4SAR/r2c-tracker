@@ -15,6 +15,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import Column, String, Text, Integer, UniqueConstraint, select, update
 from sqlalchemy.exc import IntegrityError
 
+from readiness_audit import audit_for_history
+
 from control_plane import Base, DeviceCredential, OrganizationUser, Organization, utc_now
 
 
@@ -162,7 +164,7 @@ def qualified_on(profile, flight_date):
         return False
 
 
-async def historical_pilot(store, org_id, member_id, flight_date):
+async def historical_pilot(store, org_id, member_id, flight_date, *, require_qualified=True, callsign=None):
     async with store.sessions() as session:
         profile = await session.get(PilotProfile, member_id)
         member = await session.get(OrganizationUser, member_id)
@@ -174,7 +176,9 @@ async def historical_pilot(store, org_id, member_id, flight_date):
         for revision in sorted(revisions, key=lambda row: json.loads(row.data_json)["recordedAt"], reverse=True):
             candidates.append(json.loads(revision.data_json)["before"])
         for candidate in candidates:
-            if qualified_on(candidate, flight_date):
+            if callsign is not None and str(candidate.get("callsign", "")).casefold() != callsign.casefold():
+                continue
+            if not require_qualified or qualified_on(candidate, flight_date):
                 return {**candidate, "memberId": member.id, "name": member.display_name}
         return None
 
@@ -316,8 +320,10 @@ async def record_service(store, organization_id, remote_id, actor, payload, airc
         event["notificationsQueued"] = sum("equip_manager" in member.roles for member in members)
         event["clientReportedAt"] = reported_at
         encoded = json.dumps(event)
-        session.add(AircraftServiceEvent(organization_id=organization_id, event_id=event_id,
-                    remote_id=service_key, revision=revision + 1, data_json=encoded))
+        history = AircraftServiceEvent(organization_id=organization_id, event_id=event_id,
+                    remote_id=service_key, revision=revision + 1, data_json=encoded)
+        session.add(history)
+        session.add(audit_for_history(history))
         for member in members:
             if "equip_manager" in member.roles:
                 session.add(EquipmentMail(organization_id=organization_id, event_id=event_id,
@@ -432,9 +438,11 @@ def install_routes(app, ctx):
             before = json.loads(profile.data_json or "{}")
             profile.callsign_key = data["callsign"].casefold() or None
             profile.data_json = json.dumps(data)
-            session.add(PilotProfileRevision(id=str(uuid4()), organization_id=org.id, member_id=member_id,
+            history = PilotProfileRevision(id=str(uuid4()), organization_id=org.id, member_id=member_id,
                 data_json=json.dumps({"before": before, "after": data, "editorId": user.id,
-                    "username": user.email, "recordedAt": utc_now().isoformat()})))
+                    "username": user.email, "recordedAt": utc_now().isoformat()}))
+            session.add(history)
+            session.add(audit_for_history(history))
             try:
                 await session.commit()
             except IntegrityError:

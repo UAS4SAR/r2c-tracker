@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import HTTPException
-from control_plane import ControlPlaneStore
+from control_plane import ControlPlaneStore, Organization
 from flight_readiness_records import (
     FlightReadinessRecord, key_for, preserve_submission, correct, export_records, total_weight,
 )
@@ -17,6 +17,9 @@ class FlightReadinessRecordsTest(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.store = ControlPlaneStore(f"sqlite+aiosqlite:///{Path(self.temp.name) / 'records.db'}")
         await self.store.init()
+        async with self.store.sessions() as session:
+            session.add(Organization(id="org", legal_name="Test", designator="ORG", hostname="org.test"))
+            await session.commit()
         self.flight = SimpleNamespace(id=1, organization_id="org", remote_id="RID", start_time=datetime(2026, 9, 1))
         self.actor = SimpleNamespace(id="editor", organization_id="org", state="active", roles=("records_admin",), email="editor@example.test")
         self.snapshot = {"aircraft": {"baseWeightGrams": 1200, "accessories": [
@@ -28,6 +31,20 @@ class FlightReadinessRecordsTest(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.store.dispose()
         self.temp.cleanup()
+
+    async def test_rpic_identity_does_not_require_complete_qualifications(self):
+        from control_plane import OrganizationUser
+        from aircraft_readiness import PilotProfile
+        async with self.store.sessions() as session:
+            session.add(OrganizationUser(id="pilot", organization_id="org", email="pilot@example.test", display_name="Pilot", state="active", roles_json="[]"))
+            session.add(PilotProfile(member_id="pilot", organization_id="org", callsign_key="1sar7", data_json=json.dumps({"callsign": "1sar7", "status": "unrecorded"})))
+            await session.commit()
+        flight = SimpleNamespace(id=2, organization_id="org", remote_id="OTHER", start_time=datetime(2026, 9, 11))
+        await preserve_submission(self.store, flight, {"features": [{"properties": {"r2c_prop": {"flightReadiness": {"pilot": {"memberId": "pilot", "callsign": "1SAR7"}}}}}]})
+        record = (await export_records(self.store, [flight]))[2]["current"]
+        self.assertEqual("pilot", record["pilot"]["memberId"])
+        self.assertEqual("operator_selected_member_matched", record["pilotAttribution"])
+        self.assertTrue(any("not verified" in issue for issue in record["reviewIssues"]))
 
     async def test_payload_completion_preserves_original_and_survives_reimport(self):
         self.assertIsNone(total_weight(self.snapshot))

@@ -5,7 +5,7 @@ from datetime import datetime, date
 from pathlib import Path
 from types import SimpleNamespace
 from fastapi import HTTPException
-from control_plane import ControlPlaneStore
+from control_plane import ControlPlaneStore, Organization
 from operating_profiles import catalog, save, historical_profiles, validate_profile, review_snapshot, STANDARD
 from flight_readiness_records import preserve_submission, correct, export_records
 
@@ -14,6 +14,9 @@ class OperatingProfilesTest(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.store = ControlPlaneStore(f"sqlite+aiosqlite:///{Path(self.temp.name) / 'profiles.db'}")
         await self.store.init()
+        async with self.store.sessions() as session:
+            session.add(Organization(id="org", legal_name="Test", designator="ORG", hostname="org.test"))
+            await session.commit()
         self.actor = SimpleNamespace(id="admin", organization_id="org", state="active", roles=("config_admin",), email="admin@example.test", display_name="Administrator")
         self.profile = {"id": "waiver", "version": 1, "name": "Test authority", "authorityType": "part107_waiver", "waiverNumber": "test", "holder": "Holder", "effectiveFrom": "2026-01-01", "effectiveUntil": "2026-12-31", "document": "source", "conditions": [{"text": "Verify RTH reference", "source": "Provision 8", "unit": "feet", "reference": "ATO"}]}
     async def asyncTearDown(self):

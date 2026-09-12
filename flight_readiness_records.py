@@ -1,11 +1,15 @@
 """Historical readiness snapshots and attributed, optimistic record corrections."""
 import hashlib
 import json
+from datetime import datetime
+from control_plane import as_utc
 
 from fastapi import HTTPException, Request, Depends
 from fastapi.responses import RedirectResponse
 from sqlalchemy import Column, String, Text, Integer, select, update
 from sqlalchemy.exc import IntegrityError
+
+from readiness_audit import audit_for_history
 
 from control_plane import Base, utc_now
 from aircraft_readiness import bounded_text, grams, pilots, historical_pilot, validate_aircraft_details
@@ -26,6 +30,21 @@ class FlightReadinessCorrection(Base):
     flight_key = Column(String(64), primary_key=True)
     revision = Column(Integer, primary_key=True)
     data_json = Column(Text, nullable=False)
+
+
+def flight_local_time(ctx, flight, value):
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    if value is None:
+        return "Not recorded"
+    value = as_utc(value)
+    localize = ctx.get("localize_flight_time")
+    if localize:
+        value = localize(value, getattr(flight, "start_lat", None), getattr(flight, "start_lng", None))
+    return value.strftime("%b %d, %Y %I:%M:%S %p %Z")
 
 
 def key_for(flight):
@@ -66,8 +85,12 @@ async def preserve_submission(store, flight, data):
         effective["pilot"] = pilot
         effective["pilotAttribution"] = "operator_selected_record_matched"
     else:
-        effective["pilot"] = {}
-        effective["pilotAttribution"] = "unresolved"
+        identity = await historical_pilot(store, flight.organization_id, reported_pilot.get("memberId", ""),
+            flight.start_time.date(), require_qualified=False, callsign=effective["reportedPilotCallsign"]) if isinstance(reported_pilot, dict) else None
+        effective["pilot"] = identity or {}
+        effective["pilotAttribution"] = "operator_selected_member_matched" if identity else "unresolved"
+        if identity:
+            issues.append("RPIC identity matched; qualifications for the flight date are not verified.")
     if isinstance(original.get("service"), dict):
         effective["service"] = original["service"]
     effective["configurationVersion"] = original.get("configurationVersion")
@@ -141,10 +164,12 @@ async def correct(store, flight, actor, revision, changes, reason):
         ).values(revision=revision + 1, effective_json=json.dumps(after)))
         if changed.rowcount != 1:
             raise HTTPException(409, "Another administrator changed this record. Refresh and review their correction.")
-        session.add(FlightReadinessCorrection(organization_id=key[0], flight_key=key[1], revision=revision + 1,
+        history = FlightReadinessCorrection(organization_id=key[0], flight_key=key[1], revision=revision + 1,
             data_json=json.dumps({"before": before, "after": after, "reason": reason,
                 "editorId": actor.id, "username": actor.email, "correctedAt": utc_now().isoformat(),
-                "postFlight": True})))
+                "postFlight": True}))
+        session.add(history)
+        session.add(audit_for_history(history))
         await session.commit()
 
 
@@ -194,6 +219,8 @@ def install_routes(app, ctx):
             return ctx["templates"].TemplateResponse(request=request, name="flight_readiness.html", context={
                 "request": request, "organization": org, "flight": flight, "record": effective,
                 "profile_versions": profile_versions,
+                "flight_start_local": flight_local_time(ctx, flight, flight.start_time),
+                "format_flight_time": lambda value: flight_local_time(ctx, flight, value),
                 "original": json.loads(record.original_json), "revision": record.revision,
                 "history": [json.loads(item.data_json) for item in history],
                 "total_weight": total_weight(effective), "pilots": await pilots(store, org.id),

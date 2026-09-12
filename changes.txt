@@ -1,3 +1,9 @@
+v1.4.90:
+* Show only actual aircraft edits when reviewing uploads from current apps against older published configurations; empty new fields no longer mark every drone changed.
+* Keep reported RPIC callsigns visible and match member identity separately from qualification verification; show flight readiness times in local flight time with a timezone.
+* Include pilot-profile edits, operating-profile revisions, aircraft service reports, and flight readiness corrections in the organization audit trail, with repeatable backfill of retained history.
+* Recognize the BVLOS authority-details-pending flight selection without treating it as a configured waiver.
+
 v1.4.89: deployed
 * Add organization-managed operating profiles with versioned authority documents, applicability, briefing conditions, and an explicit organization default; distribute them to compatible Android and Apple apps for offline use without changing older-device configuration compatibility.
 * Preserve each flight's reported operating authority and time-stamped changes, with advisory review flags and attributed records-administrator corrections using exact historical profile versions.

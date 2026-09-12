@@ -1214,6 +1214,8 @@ async def lifespan(app: FastAPI):
     await init_db()
     if control_plane_store is not None:
         await control_plane_store.init()
+        from readiness_audit import backfill_readiness_audit
+        logger.info("Readiness audit backfill: %s", await backfill_readiness_audit(control_plane_store))
     billing_notification_stop = asyncio.Event()
     billing_notification_task = None
     recording_spool_cleanup_stop = asyncio.Event()
@@ -6018,6 +6020,14 @@ def organization_config_diff(current: Optional[dict], proposed: dict) -> dict:
         if old and not new:
             return "removed"
         return "changed" if old != new else "unchanged"
+    def comparable_drone(item):
+        result = dict(item)
+        result.setdefault("ownerName", "")
+        result.setdefault("ownerCallsign", result.get("owner", ""))
+        readiness = aircraft_readiness.validate_aircraft_details(result.get("readiness", {}))
+        readiness["recordId"] = aircraft_readiness.aircraft_key(result)
+        result["readiness"] = readiness
+        return result
     old_drones = {item["remoteId"].casefold(): item for item in current.get("droneSpecs", [])}
     new_drones = {item["remoteId"].casefold(): item for item in proposed["droneSpecs"]}
     return {
@@ -6028,7 +6038,7 @@ def organization_config_diff(current: Optional[dict], proposed: dict) -> dict:
         "changedDrones": [
             {"before": old_drones[key], "after": new_drones[key]}
             for key in sorted(old_drones.keys() & new_drones.keys())
-            if old_drones[key] != new_drones[key]
+            if comparable_drone(old_drones[key]) != comparable_drone(new_drones[key])
         ],
     }
 

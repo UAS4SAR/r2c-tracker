@@ -11,10 +11,13 @@ from fastapi import HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import Column, String, Integer, Text, select, update
 from sqlalchemy.exc import IntegrityError
+from readiness_audit import audit_for_history
+
 from control_plane import Base, utc_now
 from aircraft_readiness import bounded_text
 
 STANDARD = {"id": "standard-part-107", "version": 1, "name": "Standard Part 107 — no operational waiver", "authorityType": "part107", "conditions": []}
+BVLOS = {"id": "bvlos-pending", "version": 1, "name": "BVLOS — authority details pending", "authorityType": "unresolved", "conditions": []}
 OTHER = {"id": "other-pending", "version": 1, "name": "Other / details pending", "authorityType": "unresolved", "conditions": []}
 
 class OperatingProfileCatalog(Base):
@@ -78,7 +81,7 @@ async def save(store, org_id, actor, expected_revision, profile, default_id):
     if actor.organization_id != org_id or actor.state != "active" or not {"config_admin", "organization_owner"}.intersection(actor.roles):
         raise HTTPException(403, "Configuration administrator required.")
     profile = validate_profile(profile)
-    if profile["id"] in (STANDARD["id"], OTHER["id"]):
+    if profile["id"] in (STANDARD["id"], BVLOS["id"], OTHER["id"]):
         raise ValueError("Built-in profile IDs are reserved.")
     async with store.sessions() as session:
         row = await session.get(OperatingProfileCatalog, org_id)
@@ -90,7 +93,7 @@ async def save(store, org_id, actor, expected_revision, profile, default_id):
         profiles = [p for p in before["profiles"] if p["id"] != profile["id"]] + [profile]
         if len(profiles) > 100:
             raise ValueError("At most 100 organization profiles are supported.")
-        if default_id not in {STANDARD["id"], OTHER["id"], *(p["id"] for p in profiles)}:
+        if default_id not in {STANDARD["id"], BVLOS["id"], OTHER["id"], *(p["id"] for p in profiles)}:
             raise ValueError("Select an existing default profile.")
         after = {"defaultProfileId": default_id, "profiles": profiles}
         if row:
@@ -101,8 +104,10 @@ async def save(store, org_id, actor, expected_revision, profile, default_id):
                 raise HTTPException(409, "Profiles changed. Refresh and review.")
         else:
             session.add(OperatingProfileCatalog(organization_id=org_id, revision=1, data_json=json.dumps(after)))
-        session.add(OperatingProfileRevision(organization_id=org_id, revision=expected_revision + 1,
-            data_json=json.dumps({"before": before, "after": after, "editorId": actor.id, "username": actor.email, "recordedAt": utc_now().isoformat()})))
+        history = OperatingProfileRevision(organization_id=org_id, revision=expected_revision + 1,
+            data_json=json.dumps({"before": before, "after": after, "editorId": actor.id, "username": actor.email, "recordedAt": utc_now().isoformat()}))
+        session.add(history)
+        session.add(audit_for_history(history))
         try:
             await session.commit()
         except IntegrityError:
@@ -112,7 +117,7 @@ async def save(store, org_id, actor, expected_revision, profile, default_id):
 
 async def historical_profiles(store, org_id):
     """Every saved version is available to a records administrator for correction."""
-    result = {(p["id"], p["version"]): p for p in (STANDARD, OTHER)}
+    result = {(p["id"], p["version"]): p for p in (STANDARD, BVLOS, OTHER)}
     async with store.sessions() as session:
         rows = (await session.scalars(select(OperatingProfileRevision).where(
             OperatingProfileRevision.organization_id == org_id).order_by(OperatingProfileRevision.revision))).all()
