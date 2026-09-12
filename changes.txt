@@ -1,4 +1,4 @@
-v1.4.90:
+v1.4.90: deployed
 * Show only actual aircraft edits when reviewing uploads from current apps against older published configurations; empty new fields no longer mark every drone changed.
 * Keep reported RPIC callsigns visible and match member identity separately from qualification verification; show flight readiness times in local flight time with a timezone.
 * Include pilot-profile edits, operating-profile revisions, aircraft service reports, and flight readiness corrections in the organization audit trail, with repeatable backfill of retained history.
