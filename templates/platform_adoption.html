@@ -11,7 +11,7 @@
   .adoption .card strong {display:block;font-size:1.7rem}
   .adoption .scroll {overflow-x:auto} .adoption table {border-collapse:collapse;width:100%;font-size:.95rem}
   .adoption th,.adoption td {text-align:left;padding:12px;border-bottom:1px solid #d8e1e7;white-space:nowrap}
-  .adoption th {background:#edf4fa} .adoption small {display:block;color:#536675}
+  .adoption th {background:#edf4fa;color:#20303d} .adoption small {display:block;color:#536675}
   .adoption details {margin:20px 0} .adoption summary {cursor:pointer;font-weight:bold}
 </style>
 {% endblock %}
@@ -23,24 +23,26 @@
      repeat use, and organizations that may benefit from training or follow-up.</p>
   <form method="get">
     <label>Period<select name="period">{% for value in ['daily','weekly','monthly'] %}<option value="{{ value }}" {% if report.period == value %}selected{% endif %}>{{ value|capitalize }}</option>{% endfor %}</select></label>
-    <label>As of<input type="date" name="as_of" value="{{ report.as_of }}" required></label>
+    <label>Reference date<input type="date" name="as_of" value="{{ report.as_of }}" required></label>
     <label>Time zone<input name="timezone_name" value="{{ report.timezone }}" required></label>
     <button type="submit">View report</button>
   </form>
-  <p><strong>{{ report.period_start }} to {{ report.period_end_exclusive }} (end exclusive)</strong><br>
-     Compared with {{ report.previous_start }} to {{ report.period_start }} · {{ report.timezone }}<br>
+  <p>Shows the last completed day, week, or month before the reference date. The current partial period is excluded.</p>
+  <h2>{{ report.period_label }}</h2>
+  <p>Compared with <strong>{{ report.previous_period_label }}</strong> · {{ report.timezone }}<br>
      <a href="?{{ export_query }}&amp;format=csv">Download flight rows (CSV)</a> ·
      <a href="?{{ export_query }}&amp;format=json">Download complete report (JSON)</a></p>
   <div class="cards">
+    <div class="card"><strong>{{ report.totals.current_flights }}</strong>Recorded flights<small>Previous: {{ report.totals.previous_flights }}</small></div>
     <div class="card"><strong>{{ report.totals.active_organizations }}</strong>Active organizations<small>Previous: {{ report.totals.previous_active_organizations }}</small></div>
-    <div class="card"><strong>{{ report.totals.new_organizations }}</strong>First recorded use</div>
-    <div class="card"><strong>{{ report.totals.retained_organizations }}</strong>Active in both periods</div>
-    <div class="card"><strong>{{ report.totals.reactivated_organizations }}</strong>Returned after a gap</div>
-    <div class="card"><strong>{{ report.totals.quiet_organizations }}</strong>No flights this period</div>
+    <div class="card"><strong>{{ report.totals.new_organizations }}</strong>Organizations with first use</div>
+    <div class="card"><strong>{{ report.totals.retained_organizations }}</strong>Organizations active in both periods</div>
+    <div class="card"><strong>{{ report.totals.reactivated_organizations }}</strong>Organizations returning after a gap</div>
+    <div class="card"><strong>{{ report.totals.quiet_organizations }}</strong>Organizations now inactive<small>Had flights previously, none in {{ report.period_label }}</small></div>
     <div class="card"><strong>{% if report.totals.organization_retention_percent is not none %}{{ report.totals.organization_retention_percent }}%{% else %}—{% endif %}</strong>Organization retention</div>
   </div>
   <div class="scroll"><table>
-    <thead><tr><th>Organization</th><th>Activity</th><th>First recorded flight</th><th>Flights</th><th>Change</th><th>Minutes</th><th>Pilots</th><th>Active days</th></tr></thead>
+    <thead><tr><th>Organization</th><th>Activity</th><th>First recorded flight</th><th>Flights</th><th>Change</th><th>Minutes</th><th>Identified pilots</th><th>Active days</th></tr></thead>
     <tbody>{% for row in report.organizations %}<tr>
       <td>{{ row.organization }}<small>{{ row.designator }}</small></td><td>{{ row.status }}</td><td>{{ row.first_recorded_flight or 'None recorded' }}</td>
       <td>{{ row.current.flights }}<small>Previous: {{ row.previous.flights }}</small></td>

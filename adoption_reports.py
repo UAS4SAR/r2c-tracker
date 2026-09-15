@@ -37,6 +37,15 @@ def utc(value):
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
+def period_label(start, end, period):
+    if period == "monthly":
+        return start.strftime("%B %Y")
+    last = end - timedelta(days=1)
+    if start == last:
+        return start.strftime("%d %b %Y")
+    return f"{start:%d %b %Y} – {last:%d %b %Y}"
+
+
 def pilot_token(organization_id, member_id, secret):
     payload = json.dumps(["adoption-pilot-v1", organization_id, member_id]).encode()
     return "P-" + hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()[:16]
@@ -120,6 +129,8 @@ def summarize(organizations, first_seen, flights, readiness, bounds, timezone_na
             bucket["minutes"] = round(bucket["minutes"], 2)
     denominator = totals["previous_active_organizations"]
     totals["organization_retention_percent"] = round(100 * totals["retained_organizations"] / denominator, 1) if denominator else None
+    totals["current_flights"] = sum(row["current"]["flights"] for row in rows.values())
+    totals["previous_flights"] = sum(row["previous"]["flights"] for row in rows.values())
     return {"timezone": timezone_name, "previous_start": previous.astimezone(zone).date().isoformat(),
             "period_start": start.astimezone(zone).date().isoformat(),
             "period_end_exclusive": end.astimezone(zone).date().isoformat(), "totals": totals,
@@ -151,6 +162,9 @@ async def load_report(db, store, Flight, period, as_of, timezone_name, secret):
     report = summarize(await store.list_organizations(), first_seen, flights, readiness,
                        bounds, timezone_name, secret)
     report.update(period=period, as_of=as_of.isoformat(), generated_at=datetime.now(UTC).isoformat())
+    local_dates = [value.astimezone(ZoneInfo(timezone_name)).date() for value in bounds]
+    report["period_label"] = period_label(local_dates[1], local_dates[2], period)
+    report["previous_period_label"] = period_label(local_dates[0], local_dates[1], period)
     return report
 
 

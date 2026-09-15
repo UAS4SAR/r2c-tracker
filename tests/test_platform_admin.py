@@ -346,8 +346,8 @@ class BigQueryBillingSnapshotProviderTest(unittest.TestCase):
         provider = self.provider(client)
 
         self.assertEqual(
-            "gcp_billing_export_resource_v1_013BAC_12404A_395D0E",
-            provider._billing_table_id(),
+            ("gcp_billing_export_resource_v1_013BAC_12404A_395D0E",),
+            provider._billing_table_ids(),
         )
 
     def test_invalid_billing_table_identifier_is_ignored(self):
@@ -355,7 +355,33 @@ class BigQueryBillingSnapshotProviderTest(unittest.TestCase):
             table_ids=("gcp_billing_export_v1_valid`; SELECT 1; --",),
         )
 
-        self.assertIsNone(self.provider(client)._billing_table_id())
+        self.assertEqual((), self.provider(client)._billing_table_ids())
+        with self.assertRaises(ValueError):
+            self.provider(client)._cost_query(("invalid`; SELECT 1; --",))
+
+    def test_account_move_keeps_both_accounts_without_duplicate_formats(self):
+        old = "013BAC_12404A_395D0E"
+        new = "01B1DE_5A235D_3DA7F7"
+        detailed = "gcp_billing_export_resource_v1_"
+        standard = "gcp_billing_export_v1_"
+        client = FakeBigQueryClient(table_ids=(
+            detailed + old, standard + old, standard + new, detailed + new,
+            "cloud_pricing_export",
+        ))
+        provider = self.provider(client)
+        tables = provider._billing_table_ids()
+        self.assertEqual((detailed + old, detailed + new), tables)
+        query = provider._cost_query(tables)
+        self.assertEqual(1, query.count("UNION ALL"))
+        self.assertIn(detailed + old, query)
+        self.assertIn(detailed + new, query)
+        self.assertNotIn(standard + old, query)
+        self.assertNotIn(standard + new, query)
+        self.assertEqual(2, query.count("WHERE project.id IN"))
+
+        # An account with only the standard export must still contribute.
+        client.table_ids = (detailed + old, standard + old, standard + new)
+        self.assertEqual((detailed + old, standard + new), provider._billing_table_ids())
 
 
 class PlatformAdminAuthenticationTest(unittest.TestCase):

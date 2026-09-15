@@ -4,7 +4,7 @@ Platform administrators can open **Adoption report** from Costs & Organizations,
 or visit `/platform-admin/adoption`. Organization users and anonymous visitors
 cannot access the report or either export.
 
-Choose daily, weekly, or monthly periods and an “as of” date. The report compares
+Choose daily, weekly, or monthly periods and a reference date. The report compares
 the last completed calendar period with the preceding one in the selected IANA
 time zone (default America/Los_Angeles). Weeks start Monday. For example,
 monthly/as-of September 14 compares August with July. To inspect September,
@@ -60,3 +60,7 @@ can incorporate late uploads. Do not create a public unauthenticated report URL
 or reuse browser session cookies as scheduler credentials.
 
 No schema migration, mobile update, or production deployment is included.
+
+## Reading the summary
+
+The first card counts recorded flights, including unassigned rows where present. Every adoption card explicitly counts organizations. “Organizations now inactive” counts organizations with flights in the comparison period but none in the displayed period; it is not a flight total and does not include organizations with no retained history. Named period headings make the completed-period comparison explicit. For example, a monthly reference date of September 15 displays August compared with July, not September month to date. Pilot counts are labeled “Identified pilots” because unmatched historical flight records do not establish distinct pilot identities.

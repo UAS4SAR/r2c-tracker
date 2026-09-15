@@ -348,27 +348,33 @@ class BigQueryBillingSnapshotProvider:
     def dataset_id(self) -> str:
         return f"{self.export_project}.{self.export_dataset}"
 
-    def _billing_table_id(self) -> Optional[str]:
+    def _billing_table_ids(self) -> tuple[str, ...]:
         table_names = {table.table_id for table in self.client.list_tables(self.dataset_id)}
+        # A project can move billing accounts mid-month. Keep every account's
+        # export, but choose one format per account to avoid counting it twice.
+        by_account = {}
         for prefix in BILLING_TABLE_PREFIXES:
             candidates = sorted(
                 table_name
                 for table_name in table_names
                 if table_name.startswith(prefix) and TABLE_ID_RE.fullmatch(table_name)
             )
-            if candidates:
-                return candidates[0]
-        return None
+            for table_name in candidates:
+                account = table_name[len(prefix):]
+                if account:
+                    by_account.setdefault(account, table_name)
+        return tuple(by_account[account] for account in sorted(by_account))
 
-    def _cost_query(self, table_id: str) -> str:
+    def _cost_query(self, table_ids: tuple[str, ...]) -> str:
+        if not table_ids or any(not TABLE_ID_RE.fullmatch(table_id) for table_id in table_ids):
+            raise ValueError("Invalid billing export table IDs")
         projects = ", ".join(
             f"'{project_id}'" for project_id in self.included_project_ids
         )
         # BigQuery does not parameterize identifiers. Every interpolated value
         # is constrained by PROJECT_ID_RE, DATASET_ID_RE, or TABLE_ID_RE before
         # this query is assembled.
-        return f"""
-WITH scoped_costs AS (
+        sources = "\nUNION ALL\n".join(f"""
   SELECT
     invoice.month AS billing_period,
     usage_end_time,
@@ -379,6 +385,10 @@ WITH scoped_costs AS (
     ) AS net_cost
   FROM `{self.dataset_id}.{table_id}`
   WHERE project.id IN ({projects})
+""".strip() for table_id in table_ids)  # nosec B608
+        return f"""
+WITH scoped_costs AS (
+{sources}
 ), latest_period AS (
   SELECT MAX(billing_period) AS billing_period
   FROM scoped_costs
@@ -413,15 +423,15 @@ FROM net_costs
         now: Optional[datetime] = None,
     ) -> PlatformBillingSnapshot:
         generated_at = now or datetime.now(tz=UTC)
-        table_id = self._billing_table_id()
-        if table_id is None:
+        table_ids = self._billing_table_ids()
+        if not table_ids:
             return build_pending_platform_snapshot(
                 "Google has accepted the export configuration; its first "
                 "billing table has not arrived yet.",
                 generated_at,
             )
 
-        rows = list(self.client.query(self._cost_query(table_id)).result())
+        rows = list(self.client.query(self._cost_query(table_ids)).result())
         if not rows or _row_value(rows[0], "billing_data_through") is None:
             return build_pending_platform_snapshot(
                 "The billing table is present, but it has no current-month "
@@ -481,7 +491,8 @@ FROM net_costs
                 (
                     f"Latest available billing period is {billing_period}; "
                     f"the export is {age_hours} hours behind. Values remain "
-                    "visible while Google finishes the export backlog."
+                    "visible, but freshness is not confirmed. Check billing "
+                    "export configuration and delivery."
                     if data_is_stale
                     else (
                         "Live month-to-date net cost for the explicitly "

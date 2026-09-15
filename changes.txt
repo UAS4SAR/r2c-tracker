@@ -1,3 +1,7 @@
+v1.4.93:
+* Include billing exports from both previous and current billing accounts, keeping one export format per account to avoid duplicate costs. Report freshness from the combined project-scoped data without assuming a Google backlog.
+* Clarify adoption reports with a recorded-flight total, explicit organization-count labels, named comparison periods, and a completed-period explanation. Improve table heading contrast and label identified pilot counts.
+
 v1.4.92: deployed
 * Add an administrator-only adoption report comparing completed daily, weekly, and monthly periods, with organization activity and protected pilot identifiers in exports.
 * Accept certificate issue dates for organization pilot tracking when optional initial test dates are absent.

@@ -3,7 +3,7 @@ import unittest
 from datetime import UTC, date, datetime
 from types import SimpleNamespace as Obj
 
-from adoption_reports import export_csv, period_bounds, pilot_token, summarize
+from adoption_reports import export_csv, period_bounds, period_label, pilot_token, summarize
 from flight_readiness_records import key_for
 
 
@@ -21,6 +21,8 @@ class AdoptionReportsTest(unittest.TestCase):
                          tuple(x.date().isoformat() for x in (prior, start, end)))
         self.assertEqual(datetime(2026, 9, 7, tzinfo=UTC),
                          period_bounds("weekly", date(2026, 9, 14), "UTC")[1])
+        self.assertEqual("August 2026", period_label(date(2026, 8, 1), date(2026, 9, 1), "monthly"))
+        self.assertEqual("14 Sep 2026", period_label(date(2026, 9, 14), date(2026, 9, 15), "daily"))
 
     def test_adoption_retention_unknown_pilots_and_privacy(self):
         bounds = tuple(datetime(2026, 8, day, tzinfo=UTC) for day in (1, 8, 15))
@@ -36,6 +38,8 @@ class AdoptionReportsTest(unittest.TestCase):
                      "pilotAttribution": "operator_selected_member_matched"} for f in flights[1:3]}
         report = summarize(orgs, first, flights, readiness, bounds, "UTC", "test-key")
         self.assertEqual(3, report["totals"]["active_organizations"])
+        self.assertEqual(4, report["totals"]["current_flights"])
+        self.assertEqual(2, report["totals"]["previous_flights"])
         self.assertEqual(50, report["totals"]["organization_retention_percent"])
         for key in ("new", "retained", "reactivated", "quiet"):
             self.assertEqual(1, report["totals"][key + "_organizations"])
