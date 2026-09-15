@@ -720,10 +720,16 @@
           <input type="hidden" name="form_token" value="{{ pilot_form_token }}">
           <label>RPIC callsign <input name="callsign" maxlength="160" value="{{ pilot.get('callsign', '') }}"></label>
           <label>Part 107 certificate number <input name="certificateNumber" maxlength="160" value="{{ pilot.get('certificateNumber', '') }}"></label>
-          <label>Original certificate date <input type="date" name="certificateDate" value="{{ pilot.get('certificateDate', '') }}"></label>
-          <label>Initial knowledge test / training date <input type="date" name="initialKnowledgeDate" value="{{ pilot.get('initialKnowledgeDate', '') }}"></label>
-          <label>Latest recurrent-training date <input type="date" name="recurrentTrainingDate" value="{{ pilot.get('recurrentTrainingDate', '') }}"></label>
+          <label>Certificate issue date <input type="date" name="certificateDate" value="{{ pilot.get('certificateDate', '') }}"></label>
           <label>Pilot status <select name="status">{% for value, label in [('unrecorded','Not recorded'),('active','Active'),('inactive','Inactive')] %}<option value="{{ value }}"{% if pilot.get('status','unrecorded') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+          <p class="span-all">Use the date on your certificate. Test and training dates are optional; the certificate date is used for tracking when no initial test date is recorded.</p>
+          <details class="span-all">
+            <summary>Optional test and training dates</summary>
+            <div class="org-form two-column">
+              <label>Initial knowledge test / training date (optional) <input type="date" name="initialKnowledgeDate" value="{{ pilot.get('initialKnowledgeDate', '') }}"></label>
+              <label>Latest recurrent-training date (optional) <input type="date" name="recurrentTrainingDate" value="{{ pilot.get('recurrentTrainingDate', '') }}"></label>
+            </div>
+          </details>
           <button type="submit">Save pilot qualifications</button>
         </form>
       </div>

@@ -46,6 +46,50 @@ class FlightReadinessRecordsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("operator_selected_member_matched", record["pilotAttribution"])
         self.assertTrue(any("not verified" in issue for issue in record["reviewIssues"]))
 
+    async def test_certificate_only_pilot_matches_flight_without_training_warning(self):
+        from control_plane import OrganizationUser
+        from aircraft_readiness import PilotProfile
+        profile = {"callsign": "1SAR7", "status": "active", "certificateNumber": "123",
+                   "certificateDate": "2025-02-28"}
+        async with self.store.sessions() as session:
+            session.add(OrganizationUser(id="pilot", organization_id="org", email="pilot@example.test",
+                                         display_name="Pilot", state="active", roles_json="[]"))
+            session.add(PilotProfile(member_id="pilot", organization_id="org", callsign_key="1sar7",
+                                    data_json=json.dumps(profile)))
+            await session.commit()
+        flight = SimpleNamespace(id=3, organization_id="org", remote_id="CERT", start_time=datetime(2026, 9, 13))
+        snapshot = {"pilot": {"memberId": "pilot", "callsign": "1SAR7"}}
+        await preserve_submission(self.store, flight, {"features": [{"properties": {"r2c_prop": {"flightReadiness": snapshot}}}]})
+        record = (await export_records(self.store, [flight]))[3]["current"]
+        self.assertEqual("operator_selected_record_matched", record["pilotAttribution"])
+        self.assertFalse(any("qualifications" in issue for issue in record["reviewIssues"]))
+        async with self.store.sessions() as session:
+            stored = await session.get(FlightReadinessRecord, ("org", key_for(flight)))
+            self.assertEqual(snapshot, json.loads(stored.original_json))
+
+    async def test_tablet_incident_details_survive_archive_and_profile_correction(self):
+        from operating_profiles import STANDARD, OTHER, active_snapshot, corrected_snapshot
+        initial = {"profile": STANDARD, "incidentId": "MAP", "assignmentId": "assignment", "organizationScope": "org",
+                   "incidentBriefing": {"incidentName": "Search 26-30", "notes": "VO at trailhead"}, "checkedConditions": []}
+        updated = {**initial, "incidentBriefing": {"incidentName": "Search 26-30", "notes": "VO moved"}}
+        snapshot = {"operatingProfile": initial, "operatingProfileChanges": [{"before": initial, "after": updated}]}
+        flight = SimpleNamespace(id=4, organization_id="org", remote_id="BRIEF", start_time=datetime(2026, 9, 13))
+        await preserve_submission(self.store, flight, {"features": [{"properties": {"r2c_prop": {"flightReadiness": snapshot}}}]})
+        record = (await export_records(self.store, [flight]))[4]["current"]
+        self.assertEqual(updated["incidentBriefing"], active_snapshot(record)["incidentBriefing"])
+        correction = corrected_snapshot(record, OTHER)
+        self.assertEqual(updated["incidentBriefing"], correction["incidentBriefing"])
+        self.assertEqual("MAP", correction["incidentId"])
+        self.assertEqual(OTHER, correction["profile"])
+        self.assertNotIn("checkedConditions", correction)
+        await correct(self.store, flight, self.actor, 0, {"operatingProfile": correction}, "Correct authority selection")
+        await preserve_submission(self.store, flight, {})
+        corrected_record = (await export_records(self.store, [flight]))[4]["current"]
+        self.assertEqual(correction, active_snapshot(corrected_record))
+        async with self.store.sessions() as session:
+            stored = await session.get(FlightReadinessRecord, ("org", key_for(flight)))
+            self.assertEqual(snapshot, json.loads(stored.original_json))
+
     async def test_payload_completion_preserves_original_and_survives_reimport(self):
         self.assertIsNone(total_weight(self.snapshot))
         await correct(self.store, self.flight, self.actor, 0, {"payloadWeightGrams": 535}, "Weighed an identical full bottle with cap")

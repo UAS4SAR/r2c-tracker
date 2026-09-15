@@ -1,3 +1,16 @@
+v1.4.92:
+* Add an administrator-only adoption report comparing completed daily, weekly, and monthly periods, with organization activity and protected pilot identifiers in exports.
+* Accept certificate issue dates for organization pilot tracking when optional initial test dates are absent.
+* Preserve tablet incident briefing details during historical operating-profile corrections and show the latest recorded selection; clarify reusable organization profiles and optional map restrictions.
+* Show completed-recording file size in MB alongside resolution and frame rate on Streams pages. Accept file size from compatible Android and iPad apps while preserving known details from older clients that omit it.
+* Refresh source details in existing stream rows without reloading the page or interrupting playback, even when the thumbnail is unchanged.
+* Retain recording size in an additive database field; live streams do not display a file size. Compatible tablet updates supply completed-video properties, including iPad resolution and frame rate that were previously missing.
+
+v1.4.91: deployed
+* Organization owners automatically inherit all standard organization capabilities, including configuration administration, even when their account predates a capability.
+* Distinguish separate recordings with numbered aircraft labels per tablet and local day, retain separate playback links, and mark recordings under ten seconds as Short clip.
+* Include sent and received audio byte counts in browser diagnostics to help diagnose one-way voice during video sessions.
+
 v1.4.90: deployed
 * Show only actual aircraft edits when reviewing uploads from current apps against older published configurations; empty new fields no longer mark every drone changed.
 * Keep reported RPIC callsigns visible and match member identity separately from qualification verification; show flight readiness times in local flight time with a timezone.

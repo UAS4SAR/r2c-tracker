@@ -1,6 +1,7 @@
 import os
 import aircraft_readiness
 import flight_readiness_records
+import adoption_reports
 import io
 import re
 import sys
@@ -27,6 +28,7 @@ from urllib.parse import quote, urlencode
 from pprint import pprint
 from datetime import datetime, date, timedelta, timezone, UTC
 from zoneinfo import ZoneInfo
+from recording_presentation import recording_labels
 from timezonefinder import TimezoneFinder
 from typing import Optional, Annotated, Literal
 from contextlib import asynccontextmanager
@@ -2634,6 +2636,7 @@ class R2CCoordinationHub:
                     drone_designator=str(
                         advertised.get("droneDesignator", "") or ""
                     ),
+                    source_size_bytes=int(advertised.get("sourceSizeBytes", 0) or 0),
                     source_width=int(advertised.get("sourceWidth", 0) or 0),
                     source_height=int(advertised.get("sourceHeight", 0) or 0),
                     source_fps=float(advertised.get("sourceFps", 0.0) or 0.0),
@@ -7244,6 +7247,34 @@ async def platform_admin_change_password(
     )
 
 
+@app.get("/platform-admin/adoption", response_class=HTMLResponse)
+async def platform_admin_adoption(
+        request: Request,
+        period: Literal["daily", "weekly", "monthly"] = "monthly",
+        as_of: Optional[date] = None,
+        timezone_name: str = "America/Los_Angeles",
+        format: Literal["html", "json", "csv"] = "html",
+        user=Depends(check_platform_admin),
+        db: AsyncSession = Depends(get_db)):
+    try:
+        zone = ZoneInfo(timezone_name)
+        report_date = as_of or datetime.now(zone).date()
+        report = await adoption_reports.load_report(
+            db, control_plane_store, Flight, period, report_date, timezone_name, str(SECRET_KEY))
+    except (ValueError, KeyError, OverflowError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid report date or time zone.") from exc
+    headers = {"Cache-Control": "private, no-store"}
+    if format == "json":
+        return JSONResponse(report, headers=headers)
+    if format == "csv":
+        headers["Content-Disposition"] = (
+            f'attachment; filename="r2c-adoption-{period}-{report["period_start"]}.csv"')
+        return Response(adoption_reports.export_csv(report), media_type="text/csv", headers=headers)
+    query = urlencode({"period": period, "as_of": report_date.isoformat(), "timezone_name": timezone_name})
+    return templates.TemplateResponse(request=request, name="platform_adoption.html",
+        context={"report": report, "export_query": query}, headers=headers)
+
+
 @app.get("/platform-admin/organizations", response_class=HTMLResponse)
 async def platform_admin_organizations(
         request: Request,
@@ -10081,6 +10112,9 @@ async def organization_streams(
         )
         if not streams:
             raise HTTPException(status_code=404, detail="Captured stream not found.")
+    # Compute labels before a session-specific link narrows the list so the
+    # same clip keeps its label on both the catalog and its individual page.
+    stream_recording_labels = recording_labels(streams)
     if clean_session:
         streams = tuple(
             item for item in streams
@@ -10168,6 +10202,7 @@ async def organization_streams(
             "organization": organization,
             "organization_user": user,
             "streams": streams,
+            "recording_labels": stream_recording_labels,
             "stream_tablet_codes": {
                 stream.session_id: tablet_link_code(
                     organization.designator,
@@ -11009,7 +11044,7 @@ async def organization_video_media_metrics(
             "elementReady=%s paused=%s element=%sx%s packets=%s bytes=%s "
             "framesReceived=%s framesDecoded=%s framesPresented=%s "
             "framesDropped=%s keyFrames=%s "
-            "codec=%s decoder=%s",
+            "codec=%s decoder=%s audioSent=%s audioReceived=%s",
             request_id,
             payload.metrics_session_id,
             payload.diagnostic_event,
@@ -11032,6 +11067,8 @@ async def organization_video_media_metrics(
             payload.video_key_frames_decoded,
             payload.video_codec,
             payload.decoder_implementation,
+            payload.audio_bytes_sent,
+            payload.audio_bytes_received,
         )
         return {"accepted": True, "totalBytes": result.total_media_bytes}
     except ControlPlaneError as exc:
@@ -12698,11 +12735,7 @@ async def organization_stream_live_status(
                 f"{quote(item.session_id, safe='')}.jpg?"
                 + urlencode({"rev": revision})
             )
-        source_label = "Source details pending"
-        if item.source_width and item.source_height:
-            source_label = f"{item.source_width}×{item.source_height}"
-            if item.source_fps:
-                source_label += f" at {item.source_fps:.1f} fps"
+        source_label = item.source_label
         values.append({
             "sessionId": item.session_id,
             "thumbnailRevision": revision,

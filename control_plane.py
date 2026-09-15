@@ -424,7 +424,10 @@ class OrganizationUser(Base):
         values = json.loads(self.roles_json or "[]")
         normalized_roles = {value for value in values if value in ROLE_NAMES}
         if "organization_owner" in normalized_roles:
-            normalized_roles.add("r2c_device")
+            # Resolve authority on read so owners created before a capability
+            # was introduced inherit it without rewriting their stored roles.
+            # Equipment-manager notifications remain an explicit assignment.
+            normalized_roles.update(DEFAULT_OWNER_ROLES)
         if "r2c_device" in normalized_roles:
             normalized_roles.add("records_viewer")
         return tuple(sorted(normalized_roles))
@@ -971,6 +974,7 @@ class ActiveVideoStream(Base):
     source_height: Mapped[int] = mapped_column(Integer, default=0)
     source_fps_milli: Mapped[int] = mapped_column(Integer, default=0)
     source_bitrate_bps: Mapped[int] = mapped_column(BigInteger, default=0)
+    source_size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     source_codec: Mapped[str] = mapped_column(String(32), default="")
     media_kind: Mapped[str] = mapped_column(String(16), default="live")
     recorded_at: Mapped[Optional[datetime]] = mapped_column(
@@ -1442,6 +1446,20 @@ class ActiveVideoStreamRecord:
     remote_control_enabled: bool
     last_seen_at: datetime
     expires_at: datetime
+
+    source_size_bytes: int = 0
+
+    @property
+    def source_label(self) -> str:
+        parts = []
+        if self.source_width and self.source_height:
+            label = f"{self.source_width}×{self.source_height}"
+            if self.source_fps:
+                label += f" at {self.source_fps:.1f} fps"
+            parts.append(label)
+        if self.media_kind == "recording" and self.source_size_bytes > 0:
+            parts.append(f"{self.source_size_bytes / 1_000_000:.1f} MB")
+        return " · ".join(parts) or "Source details pending"
 
     @property
     def recorded_at_local(self) -> Optional[datetime]:
@@ -2137,6 +2155,11 @@ class ControlPlaneStore:
                 await connection.execute(text(
                     "ALTER TABLE active_video_streams "
                     f"ADD COLUMN recorded_at {timestamp_type}"
+                ))
+            if "source_size_bytes" not in columns:
+                await connection.execute(text(
+                    "ALTER TABLE active_video_streams "
+                    "ADD COLUMN source_size_bytes BIGINT DEFAULT 0 NOT NULL"
                 ))
             if "duration_ms" not in columns:
                 await connection.execute(text(
@@ -7555,6 +7578,7 @@ class ControlPlaneStore:
         source_height: int = 0,
         source_fps: float = 0.0,
         source_bitrate_bps: int = 0,
+        source_size_bytes: int = 0,
         source_codec: str = "",
         media_kind: str = "live",
         recorded_at: Optional[datetime] = None,
@@ -7594,6 +7618,7 @@ class ControlPlaneStore:
         height = max(0, min(int(source_height), 16384))
         fps_milli = max(0, min(int(round(source_fps * 1000)), 240000))
         bitrate = max(0, min(int(source_bitrate_bps), 1_000_000_000))
+        size_bytes = max(0, min(int(source_size_bytes), 2**63 - 1)) if clean_media_kind == "recording" else 0
         expires_at = seen_at + timedelta(seconds=ttl_seconds)
         async with self.sessions() as session:
             credential = await session.get(DeviceCredential, device_credential_id)
@@ -7652,6 +7677,10 @@ class ControlPlaneStore:
                 stream.drone_designator != clean_drone[:160],
                 stream.device_name != credential.device_name[:160],
                 stream.media_kind != clean_media_kind,
+                (size_bytes > 0 and stream.source_size_bytes != size_bytes),
+                (width > 0 and stream.source_width != width),
+                (height > 0 and stream.source_height != height),
+                (fps_milli > 0 and stream.source_fps_milli != fps_milli),
                 as_utc(stream.recorded_at) != clean_recorded_at,
                 stream.duration_ms != clean_duration_ms,
                 stream.thumbnail_revision != clean_thumbnail_revision,
@@ -7671,6 +7700,8 @@ class ControlPlaneStore:
                 stream.source_bitrate_bps = bitrate
             if is_new_stream or clean_codec:
                 stream.source_codec = clean_codec[:32]
+            if is_new_stream or size_bytes > 0 or clean_media_kind == "live":
+                stream.source_size_bytes = size_bytes
             stream.media_kind = clean_media_kind
             stream.recorded_at = clean_recorded_at
             stream.duration_ms = clean_duration_ms
@@ -9603,6 +9634,7 @@ class ControlPlaneStore:
             source_height=stream.source_height,
             source_fps=stream.source_fps_milli / 1000.0,
             source_bitrate_bps=stream.source_bitrate_bps,
+            source_size_bytes=stream.source_size_bytes or 0,
             source_codec=stream.source_codec,
             media_kind=stream.media_kind,
             recorded_at=as_utc(stream.recorded_at),

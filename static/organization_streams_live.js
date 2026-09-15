@@ -72,6 +72,13 @@
       .find((image) => image.dataset.streamSessionId === sessionId);
   }
 
+  function updateSourceLabel(item) {
+    if (typeof item.sourceLabel !== "string") return;
+    const label = Array.from(document.querySelectorAll(".stream-source-label"))
+      .find((element) => element.dataset.streamSessionId === item.sessionId);
+    if (label) label.textContent = item.sourceLabel;
+  }
+
   function updatePreview(item) {
     const image = previewImage(item.sessionId);
     if (!image || !item.thumbnailUrl) return;
@@ -126,7 +133,10 @@
     }
     watchActive = (status.streams || []).length > 0 ||
       currentInProgressSessionIds.length > 0;
-    (status.streams || []).forEach(updatePreview);
+    (status.streams || []).forEach((item) => {
+      updatePreview(item);
+      updateSourceLabel(item);
+    });
   }
 
   function scheduleRefresh() {

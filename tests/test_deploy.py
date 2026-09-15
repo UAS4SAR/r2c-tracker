@@ -134,7 +134,7 @@ class DeployScriptTest(unittest.TestCase):
         dockerfile = (repo / "Dockerfile").read_text()
         for module in (
             "faa_proxy.py",
-            "runtime_io.py",
+            "runtime_io.py", "recording_presentation.py", "adoption_reports.py",
             "control_plane.py",
             "subscription_plans.py",
             "enrollment.py",

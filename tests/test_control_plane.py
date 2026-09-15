@@ -41,6 +41,43 @@ from control_plane import (
 
 
 class ControlPlaneStoreTest(unittest.TestCase):
+    def test_legacy_owner_inherits_all_owner_capabilities_without_rewrite(self):
+        owner = OrganizationUser(roles_json='["organization_owner"]')
+        self.assertEqual(set(DEFAULT_OWNER_ROLES), set(owner.roles))
+        self.assertIn("config_admin", owner.roles)
+        self.assertEqual('["organization_owner"]', owner.roles_json)
+        self.assertNotIn("equip_manager", owner.roles)
+
+    def test_delegated_admin_does_not_inherit_owner_capabilities(self):
+        member = OrganizationUser(roles_json='["user_admin"]')
+        self.assertEqual(("user_admin",), member.roles)
+
+    def test_stored_legacy_owner_exposes_config_admin_to_authorization(self):
+        organization = self.create_organization()
+
+        async def read_legacy_owner():
+            async with self.store.sessions() as session:
+                from sqlalchemy import select
+                owner = await session.scalar(select(OrganizationUser).where(
+                    OrganizationUser.organization_id == organization.id))
+                owner.roles_json = '["organization_owner"]'
+                owner_id = owner.id
+                await session.commit()
+            return await self.store.get_user(owner_id)
+
+        owner = asyncio.run(read_legacy_owner())
+        self.assertEqual(organization.id, owner.organization_id)
+        self.assertIn("config_admin", owner.roles)
+        members = asyncio.run(self.store.list_users(organization.id))
+        self.assertIn("config_admin", members[0].roles)
+
+    def test_owner_role_removal_removes_inherited_capabilities(self):
+        member = OrganizationUser(roles_json='["organization_owner", "equip_manager"]')
+        self.assertIn("config_admin", member.roles)
+        self.assertIn("equip_manager", member.roles)
+        member.set_roles(("r2c_device",))
+        self.assertEqual({"r2c_device", "records_viewer"}, set(member.roles))
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         database_path = Path(self.temp_dir.name) / "control-plane.db"
@@ -2859,6 +2896,60 @@ class ControlPlaneStoreTest(unittest.TestCase):
                 )
             ),
         )
+
+    def test_recording_source_size_round_trip_and_legacy_preservation(self):
+        organization = self.create_organization()
+        owner = asyncio.run(self.store.activate_owner(
+            organization.designator,
+            organization.primary_admin_email,
+            "correct horse battery staple",
+            self.now,
+        ))
+        campaign = asyncio.run(self.store.create_enrollment_campaign(
+            organization_id=organization.id,
+            label="Re-enrolled video tablet",
+            created_by_user_id=owner.id,
+            expires_in_hours=24,
+            max_redemptions=2,
+            now=self.now,
+        ))
+        device = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="Field tablet",
+            platform="android",
+            installation_id="11111111-2222-3333-4444-555555555555",
+            authorized_user_id=owner.id,
+            now=self.now,
+        ))
+        kwargs = dict(organization_id=organization.id, device_credential_id=device.id,
+                      session_id="00000000-0000-3000-8000-000000000001",
+                      incident_name="Taylor Site", drone_designator="Matrice",
+                      media_kind="recording", now=self.now)
+        recording = asyncio.run(self.store.advertise_video_stream(
+            **kwargs, source_width=1920, source_height=1080, source_fps=29.97,
+            source_size_bytes=363_400_000))
+        self.assertEqual(363_400_000, recording.source_size_bytes)
+        self.assertEqual("1920×1080 at 30.0 fps · 363.4 MB", recording.source_label)
+        legacy = asyncio.run(self.store.advertise_video_stream(**kwargs))
+        self.assertEqual(recording.source_label, legacy.source_label)
+        updated = asyncio.run(self.store.advertise_video_stream(**kwargs, source_size_bytes=400_000_000))
+        self.assertEqual(400_000_000, updated.source_size_bytes)
+        kwargs["media_kind"] = "live"
+        live = asyncio.run(self.store.advertise_video_stream(**kwargs, source_size_bytes=999))
+        self.assertEqual(0, live.source_size_bytes)
+        self.assertNotIn("MB", live.source_label)
+        # Simulate an existing installation before the additive schema change.
+        asyncio.run(self.store.dispose())
+        connection = sqlite3.connect(Path(self.temp_dir.name) / "control-plane.db")
+        connection.execute("ALTER TABLE active_video_streams DROP COLUMN source_size_bytes")
+        connection.commit()
+        connection.close()
+        asyncio.run(self.store.init())
+        migrated = asyncio.run(self.store.list_active_video_streams(organization_id=organization.id, now=self.now))
+        self.assertEqual(1, len(migrated))
+        self.assertEqual(0, migrated[0].source_size_bytes)
+        self.assertEqual(1920, migrated[0].source_width)
 
     def test_expired_recording_can_resume_after_same_org_device_reenrollment(self):
         organization = self.create_organization()

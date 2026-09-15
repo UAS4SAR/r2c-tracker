@@ -139,9 +139,15 @@ def validate_pilot(value):
     return result
 
 
+def pilot_tracking_dates(profile):
+    # Organization tracking accepts the certificate date when an initial test date
+    # is not recorded. Retain explicit training dates without requiring them.
+    initial = profile.get("initialKnowledgeDate") or profile.get("certificateDate")
+    return [value for value in (initial, profile.get("recurrentTrainingDate")) if value]
+
+
 def pilot_valid_until(profile):
-    # FAA 107.65 uses knowledge-test/training dates, not certificate issue date.
-    dates = [profile.get(key) for key in ("initialKnowledgeDate", "recurrentTrainingDate") if profile.get(key)]
+    dates = pilot_tracking_dates(profile)
     if not dates or not profile.get("certificateNumber") or profile.get("status") != "active":
         return ""
     latest = date.fromisoformat(max(dates))
@@ -154,8 +160,8 @@ def qualified_on(profile, flight_date):
             return False
         if not profile.get("certificateDate") or date.fromisoformat(profile["certificateDate"]) > flight_date:
             return False
-        dates = [date.fromisoformat(profile[key]) for key in ("initialKnowledgeDate", "recurrentTrainingDate")
-                 if profile.get(key) and date.fromisoformat(profile[key]) <= flight_date]
+        dates = [date.fromisoformat(value) for value in pilot_tracking_dates(profile)
+                 if date.fromisoformat(value) <= flight_date]
         if not dates:
             return False
         latest = max(dates)

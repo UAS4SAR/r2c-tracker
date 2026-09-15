@@ -214,11 +214,11 @@ def install_routes(app, ctx):
                 FlightReadinessCorrection.flight_key == key_for(flight)
             ).order_by(FlightReadinessCorrection.revision))).all()
             effective = json.loads(record.effective_json)
-            from operating_profiles import historical_profiles
+            from operating_profiles import historical_profiles, active_snapshot
             profile_versions = await historical_profiles(store, org.id)
             return ctx["templates"].TemplateResponse(request=request, name="flight_readiness.html", context={
                 "request": request, "organization": org, "flight": flight, "record": effective,
-                "profile_versions": profile_versions,
+                "profile_versions": profile_versions, "operating_snapshot": active_snapshot(effective),
                 "flight_start_local": flight_local_time(ctx, flight, flight.start_time),
                 "format_flight_time": lambda value: flight_local_time(ctx, flight, value),
                 "original": json.loads(record.original_json), "revision": record.revision,
@@ -255,12 +255,12 @@ def install_routes(app, ctx):
                 changes["selectedAccessories"] = selected
                 changes["aircraft"] = {**aircraft, "baseWeightGrams": grams(form.get("base_weight"), "Historical base weight")}
             if str(form.get("operating_profile_correction", "")).strip():
-                from operating_profiles import historical_profiles, review_snapshot
+                from operating_profiles import historical_profiles, review_snapshot, corrected_snapshot
                 options = await historical_profiles(ctx["control_plane_store"], org.id)
                 corrected = next((p for p in options if f"{p['id']}@{p['version']}" == form["operating_profile_correction"]), None)
                 if corrected is None:
                     raise ValueError("Select a saved profile version from this organization.")
-                changes["operatingProfile"] = {"profile": corrected, "postFlight": True}
+                changes["operatingProfile"] = corrected_snapshot(snapshot, corrected)
                 changes["operatingProfileReviewIssues"] = review_snapshot(changes["operatingProfile"], flight.start_time.date())
                 changes["operatingProfileCorrectionNote"] = "Historical authority corrected; original timeline retained."
             if str(form.get("checklist_amendment", "")).strip():

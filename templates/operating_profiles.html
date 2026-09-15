@@ -10,7 +10,8 @@
 </style>
 <div class="dashboard-container operating-profile-editor">
 <h1>Operating profiles — {{ organization.legal_name }}</h1>
-<p>Profiles brief the RPIC or the VO entering information for the RPIC. Selection does not grant operating authority. Airspace authorization remains separate. Missing or expired information never stops mission recording.</p>
+<p>Set up the standing authority and standard briefing once here. Crews select the profile and enter incident details on their tablet; this page does not need updating for each search.</p>
+<p>Selection does not grant operating authority. Airspace authorization remains separate. Missing or expired information never stops mission recording.</p>
 <p><a href="/{{ organization.designator|lower }}/admin/operating-profiles">Add profile</a> · <a href="/{{ organization.designator|lower }}/admin/configuration">Organization configuration</a></p>
 <ul>{% for p in catalog.profiles %}<li><a href="?profile={{ p.id|urlencode }}">{{ p.name }}</a> · version {{ p.version }}{% if p.id == catalog.defaultProfileId %} · organization default{% endif %}</li>{% endfor %}</ul>
 <form method="post">
@@ -26,8 +27,12 @@
 <fieldset><legend>Aircraft</legend>{% for aircraft in aircraft_choices %}<label><input type="checkbox" name="aircraftIds" value="{{ aircraft.readiness.recordId }}"{% if aircraft.readiness.recordId in profile.get('aircraftIds', []) %} checked{% endif %}> {{ aircraft.mappedId }} — {{ aircraft.remoteId }}</label>{% endfor %}
 {% set known_aircraft = aircraft_choices|map(attribute='readiness.recordId')|list %}
 {% for id in profile.get('aircraftIds', []) if id not in known_aircraft %}<label><input type="checkbox" name="aircraftIds" value="{{ id }}" checked> Previously selected aircraft (not in the current fleet)</label>{% endfor %}</fieldset>
-<p><label>Applicable incident / CalTopo map IDs (separate with commas) <input name="locationIds" value="{{ profile.get('locationIds', [])|join(', ') }}"></label></p>
-<h2>Briefing conditions</h2><p>Transcribe verified source provisions. Include RPIC range, altitude reference and limits, VO, equipment, and RTH conditions where relevant. Keep AGL, ATO, obstacle-relative height, and horizontal distances distinct. These are readable advisory checklist items, not automatically verified operating limits.</p>
+<details{% if profile.get('locationIds', []) %} open{% endif %}>
+<summary>Advanced: standing restrictions to specific maps (optional)</summary>
+<p>Leave blank for a profile used across searches. The tablet records the connected incident map automatically. Only use this restriction if the standing profile itself is limited to these maps.</p>
+<label>Restricted map IDs (separate with commas) <input name="locationIds" value="{{ profile.get('locationIds', [])|join(', ') }}"></label>
+</details>
+<h2>Standard briefing conditions</h2><p>These are reusable conditions from the standing authority, not a form to complete before each search. Crews review them and add incident-specific briefing notes on the tablet.</p><p>Transcribe verified source provisions. Include RPIC range, altitude reference and limits, VO, equipment, and RTH conditions where relevant. Keep AGL, ATO, obstacle-relative height, and horizontal distances distinct. These are readable advisory checklist items, not automatically verified operating limits.</p>
 {% for item in profile.conditions + [{}, {}, {}, {}, {}] %}<fieldset><legend>Condition {{ loop.index }}</legend>
 <label>Condition <textarea name="condition_text" rows="2" maxlength="4000">{{ item.get('text', '') }}</textarea></label>
 <label>Source provision <input name="condition_source" value="{{ item.get('source', '') }}"></label>

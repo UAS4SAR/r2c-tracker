@@ -127,6 +127,26 @@ async def historical_profiles(store, org_id):
     return list(result.values())
 
 
+def active_snapshot(record):
+    selected = record.get("operatingProfile", {})
+    selected = selected if isinstance(selected, dict) else {}
+    if selected.get("postFlight"):
+        return selected
+    changes = record.get("operatingProfileChanges", [])
+    if isinstance(changes, list):
+        for change in reversed(changes):
+            if isinstance(change, dict) and isinstance(change.get("after"), dict):
+                return change["after"]
+    return selected
+
+
+def corrected_snapshot(record, profile):
+    # Correct the authority selection without discarding tablet incident details.
+    previous = active_snapshot(record)
+    return {**{key: previous[key] for key in ("incidentId", "assignmentId", "organizationScope", "incidentBriefing") if key in previous},
+            "profile": profile, "postFlight": True}
+
+
 def review_snapshot(snapshot, flight_date):
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("profile"), dict):
         return ["Operating authority was not reported; review details."]

@@ -405,6 +405,9 @@
   {% for session_title, session_streams, session_kind in (("Live sessions", live_streams, "live"), ("Recorded sessions", recorded_streams, "recording")) %}
   <section class="streams-panel">
     <h2>{{ session_title }}</h2>
+    {% if session_kind == "recording" and recording_labels %}
+    <p class="secondary">Numbered clips are separate recordings from the same aircraft and tablet on that day. Check the time and duration before playing.</p>
+    {% endif %}
     {% if session_streams %}
     <div style="overflow-x:auto">
       <table class="stream-table">
@@ -421,6 +424,7 @@
         </thead>
         <tbody>
         {% for stream in session_streams %}
+          {% set stream_label = recording_labels.get(stream.session_id, stream.drone_designator) %}
           {% set active_consumer = active_consumers_by_device_id.get(stream.device_credential_id) %}
           {% set recording_download = recording_downloads_by_session.get(stream.session_id) %}
           <tr data-stream-session-id="{{ stream.session_id }}">
@@ -433,7 +437,7 @@
                 {% if tablet_code %}<input type="hidden" name="tablet" value="{{ tablet_code }}">{% endif %}
                 {% if stream_filter %}<input type="hidden" name="stream" value="{{ stream_filter }}">{% endif %}
                 <button class="preview-button" type="submit"
-                        aria-label="{% if stream.media_kind == 'recording' %}Play{% else %}Request{% endif %} {{ stream.drone_designator }} {{ stream.media_kind }} video">
+                        aria-label="{% if stream.media_kind == 'recording' %}Play{% else %}Request{% endif %} {{ stream_label }} {{ stream.media_kind }} video">
                   <img
                     class="stream-preview-image"
                     data-stream-session-id="{{ stream.session_id }}"
@@ -482,19 +486,15 @@
               <span class="secondary" style="display:block">
                 {{ (stream.duration_ms / 1000)|round|int|duration_clock }}
               </span>
+              {% if stream.duration_ms < 10000 %}<strong class="secondary">Short clip</strong>{% endif %}
               {% endif %}
             </td>
             {% endif %}
             <td><strong>{{ stream.incident_name }}</strong></td>
-            <td>{{ stream.drone_designator }}</td>
+            <td>{{ stream_label }}</td>
             <td>{{ stream.device_name }}</td>
             <td>
-              {% if stream.source_width and stream.source_height %}
-                {{ stream.source_width }}×{{ stream.source_height }}
-                {% if stream.source_fps %} at {{ "%.1f"|format(stream.source_fps) }} fps{% endif %}
-              {% else %}
-                <span class="secondary">Source details pending</span>
-              {% endif %}
+              <span class="secondary stream-source-label" data-stream-session-id="{{ stream.session_id }}">{{ stream.source_label }}</span>
             </td>
             <td>
               <div class="stream-actions">
@@ -654,7 +654,7 @@
      data-membership-revision="{{ stream_membership_revision }}"
      data-in-progress-session-ids="{{ request_in_progress_session_ids | list | sort | tojson | forceescape }}"
      data-status-url="/{{ organization.designator|lower }}/streams/live-status"></div>
-<script src="/static/organization_streams_live.js?v=20260906-1" defer></script>
+<script src="/static/organization_streams_live.js?v=20260915-1" defer></script>
 {% if recording_downloads_enabled %}
 {% for recording_download in recording_downloads_by_session.values() %}
 {% if recording_download.state in ("awaiting_approval", "approved", "uploading") %}

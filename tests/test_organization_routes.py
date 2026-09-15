@@ -308,7 +308,7 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertIn("if (stopped || !watchActive || !pageIsVisible()) return", script)
         self.assertIn("if (!stopped) reconcile()", script)
         self.assertIn('data-watch-active="', template)
-        self.assertIn("organization_streams_live.js?v=20260906-1", template)
+        self.assertIn("organization_streams_live.js?v=20260915-1", template)
         self.assertIn("status.membershipRevision !== renderedMembershipRevision", script)
         self.assertIn('const sessionFilter = state.dataset.sessionFilter', script)
         self.assertIn('query.set("session", sessionFilter)', script)
@@ -693,6 +693,38 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             tuple(stream.session_id for stream in sorted_streams),
         )
 
+    def test_recording_page_distinguishes_short_clips_and_preserves_filtered_label(self):
+        organization = asyncio.run(self.store.create_organization(
+            legal_name="SAR", designator="NCSSAR", admin_name="Owner",
+            admin_email="owner@example.test", postal_address="Address",
+            actor_id="platform-admin", simulation=True))
+        owner = asyncio.run(self.store.list_users(organization.id))[0]
+        now = datetime.now(UTC)
+        clips = [SimpleNamespace(
+            id=f"clip-{number}", session_id=f"clip-{number}",
+            organization_id=organization.id, device_credential_id="ipad",
+            device_name="Demo iPad", incident_name="Demo", drone_designator="Drone",
+            media_kind="recording", recorded_at=now + timedelta(seconds=number),
+            recorded_at_local=now + timedelta(seconds=number), duration_ms=duration,
+            last_seen_at=now, expires_at=now + timedelta(minutes=10),
+            source_width=1280, source_height=720, source_fps=30,
+            source_bitrate_bps=2500000, source_codec="h264",
+            thumbnail_revision="preview", remote_control_enabled=False,
+        ) for number, duration in [(1, 2200), (2, 112000)]]
+        with patch.object(main, "require_organization_user", AsyncMock(return_value=(organization, owner))), \
+             patch.object(self.store, "list_active_video_streams", AsyncMock(return_value=clips)):
+            page = self.client.get("/ncssar/streams")
+            self.assertEqual(200, page.status_code, page.text)
+            self.assertIn("Drone-1", page.text)
+            self.assertIn("Drone-2", page.text)
+            self.assertIn("Short clip", page.text)
+            self.assertIn('/ncssar/streams/clip-1/request', page.text)
+            self.assertIn('/ncssar/streams/clip-2/request', page.text)
+            filtered = self.client.get("/ncssar/streams?session=clip-2")
+            self.assertEqual(200, filtered.status_code, filtered.text)
+            self.assertIn("Drone-2", filtered.text)
+            self.assertNotIn("Short clip", filtered.text)
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         database_path = Path(self.temp_dir.name) / "control-plane.db"
@@ -790,6 +822,59 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         async with self.flight_sessions() as session:
             result = await session.execute(select(main.Flight).order_by(main.Flight.id))
             return result.scalars().all()
+
+    def test_platform_adoption_report_loads_database_and_exports_private_rows(self):
+        organization = asyncio.run(self.store.create_organization(
+            legal_name="Adoption Test SAR", designator="ADOPTSAR",
+            admin_name="Private Administrator", admin_email="private@example.test",
+            postal_address="Private Address", actor_id="platform-admin", simulation=True))
+        asyncio.run(self.add_flight(organization.id, "PRIVATE-CALLSIGN"))
+        query = "?period=monthly&as_of=2026-08-01&timezone_name=UTC"
+        response = self.client.get("/platform-admin/adoption" + query + "&format=json")
+        self.assertEqual(200, response.status_code)
+        report = response.json()
+        self.assertEqual(1, report["totals"]["new_organizations"])
+        self.assertEqual(1, report["totals"]["active_organizations"])
+        self.assertEqual(10, report["organizations"][0]["current"]["minutes"])
+        self.assertEqual("unknown", report["flights"][0]["pilot_number"])
+        self.assertNotIn("PRIVATE-CALLSIGN", response.text)
+        self.assertNotIn("private@example.test", response.text)
+        self.assertIn("no-store", response.headers["cache-control"])
+        page = self.client.get("/platform-admin/adoption" + query)
+        self.assertEqual(200, page.status_code)
+        self.assertIn("Adoption Test SAR", page.text)
+        self.assertIn("No prior baseline", page.text)
+        csv_response = self.client.get("/platform-admin/adoption" + query + "&format=csv")
+        self.assertEqual(200, csv_response.status_code)
+        self.assertIn("Adoption Test SAR", csv_response.text)
+        self.assertNotIn("PRIVATE-CALLSIGN", csv_response.text)
+        async def add_matched_pilot():
+            flight = (await self.all_flights())[0]
+            async with self.store.sessions() as session:
+                session.add(main.flight_readiness_records.FlightReadinessRecord(
+                    organization_id=organization.id,
+                    flight_key=main.flight_readiness_records.key_for(flight),
+                    original_json="{}", effective_json=json.dumps({
+                        "pilot": {"memberId": "PRIVATE-MEMBER", "name": "Private Pilot"},
+                        "pilotAttribution": "operator_selected_member_matched"})))
+                await session.commit()
+        asyncio.run(add_matched_pilot())
+        matched = self.client.get("/platform-admin/adoption" + query + "&format=json")
+        self.assertEqual(1, matched.json()["organizations"][0]["current"]["pilots"])
+        self.assertTrue(matched.json()["flights"][0]["pilot_number"].startswith("P-"))
+        self.assertNotIn("PRIVATE-MEMBER", matched.text)
+        self.assertNotIn("Private Pilot", matched.text)
+        self.assertEqual(400, self.client.get("/platform-admin/adoption?timezone_name=Invalid/Zone").status_code)
+        self.assertEqual(422, self.client.get("/platform-admin/adoption?period=invalid").status_code)
+
+    def test_platform_adoption_requires_platform_session_for_every_format(self):
+        self.client.cookies.clear()
+        with patch.object(main.adoption_reports, "load_report", new_callable=AsyncMock) as load:
+            for format in ("html", "json", "csv"):
+                response = self.client.get("/platform-admin/adoption?format=" + format, follow_redirects=False)
+                self.assertEqual(303, response.status_code)
+                self.assertTrue(response.headers["location"].startswith("/platform-admin/login?"))
+            load.assert_not_awaited()
 
     def test_owner_approves_versioned_device_configuration_and_devices_pull_current(self):
         organization = asyncio.run(
@@ -2988,6 +3073,7 @@ class OrganizationRouteFlowTest(unittest.TestCase):
                             "mediaKind": "recording",
                             "recordedAt": "2026-08-10T19:30:00Z",
                             "durationMs": 91_000,
+                            "sourceSizeBytes": 363_400_000,
                             "thumbnailRevision": "recording-thumb-1",
                             "thumbnailJpegBase64": "/9j/2Q==",
                         },
@@ -3000,6 +3086,10 @@ class OrganizationRouteFlowTest(unittest.TestCase):
                 acknowledgement["type"],
             )
             self.assertTrue(acknowledgement["accepted"])
+        stored_streams = asyncio.run(self.store.list_active_video_streams(organization_id=organization.id))
+        recording = next(item for item in stored_streams if item.media_kind == "recording")
+        self.assertEqual(363_400_000, recording.source_size_bytes)
+        self.assertEqual("1280×720 at 30.0 fps · 363.4 MB", recording.source_label)
         anonymous_tablet_code = tablet_link_code(
             "ncssar", "Android video tablet"
         )
@@ -3083,6 +3173,11 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         streams_page = self.client.get("/ncssar/streams")
 
         self.assertEqual(200, streams_page.status_code)
+        self.assertIn("1280×720 at 30.0 fps · 363.4 MB", streams_page.text)
+        status_response = self.client.get("/ncssar/streams/live-status")
+        self.assertEqual(200, status_response.status_code)
+        source_labels = [item["sourceLabel"] for item in status_response.json()["streams"]]
+        self.assertIn("1280×720 at 30.0 fps · 363.4 MB", source_labels)
         self.assertEqual("no-store", streams_page.headers["cache-control"])
         # Match rendered table cells rather than arbitrary substrings. Random
         # CSRF/session values can legitimately contain "2B" and made this

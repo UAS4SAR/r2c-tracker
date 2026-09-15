@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Flight {{ flight.id }} readiness record{% endblock %}
 {% block content %}
+{% set operating_snapshot = operating_snapshot|default(record.get("operatingProfile", {})) %}
 <div class="dashboard-container">
   <h1>Flight {{ flight.id }} — RPIC, equipment &amp; payload</h1>
   <p>{{ flight_start_local }} · RID {{ flight.remote_id }} · {{ flight.sar_id }}</p>
@@ -19,7 +20,14 @@
     <p>Accessories carried on this flight:</p>
     {% for accessory in record.aircraft.get('accessories', []) %}<p><label><input type="checkbox" name="selected_accessories" value="{{ accessory.id }}"{% if accessory.id in record.get('selectedAccessories', []) %} checked{% endif %}> {{ accessory.name }} ({{ accessory.get('weightGrams') if accessory.get('weightGrams') is not none else 'unknown' }} grams)</label></p>{% endfor %}
     {% endif %}
-    <p>Operating profile: {{ record.get("operatingProfile", {}).get("profile", {}).get("name", "Not reported") }}. Original profile changes remain in the history.</p>
+    <p>Operating profile: {{ operating_snapshot.get("profile", {}).get("name", "Not reported") }}. Original profile changes remain in the history.</p>
+    {% set briefing = operating_snapshot.get('incidentBriefing', {}) %}
+    {% if briefing is mapping and ('incidentBriefing' in operating_snapshot or operating_snapshot.get('incidentId')) %}
+    <h2>Tablet incident briefing</h2>
+    <p>Incident map: {{ operating_snapshot.get('incidentId') or 'Standalone — no connected map' }}</p>
+    <p>Incident name / reference: {{ briefing.get('incidentName') or 'Not entered' }}</p>
+    <p style="white-space: pre-wrap">{{ briefing.get('notes') or 'No additional briefing notes' }}</p>
+    {% endif %}
     <p><label>Correct historical operating profile <select name="operating_profile_correction"><option value="">Keep recorded selection</option>{% for p in profile_versions %}<option value="{{ p.id }}@{{ p.version }}">{{ p.name }} — version {{ p.version }}</option>{% endfor %}</select></label></p>
     <p>Uses the saved conditions for that version. The reason below and attributed before/after history are required. The original in-flight timeline remains available.</p>
     <p><label>Post-flight checklist amendment (optional)<br><textarea name="checklist_amendment" rows="2" maxlength="4000"></textarea></label></p>

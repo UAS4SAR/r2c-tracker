@@ -494,6 +494,7 @@
       <strong>{{ snapshot.billing_data_through.strftime("%d %b %Y %H:%M UTC") }}</strong>
       <div>{{ platform_admin.email }}</div>
       <a href="/platform-admin/account">Account</a>
+      <a href="/platform-admin/adoption">Adoption report</a>
       <form method="post" action="/platform-admin/logout">
         <input type="hidden" name="form_token" value="{{ account_csrf_token }}">
         <button type="submit">Sign out</button>

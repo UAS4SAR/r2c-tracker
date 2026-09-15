@@ -11,7 +11,7 @@ from sqlalchemy import select
 from control_plane import ControlPlaneStore, OrganizationUser, Organization
 from aircraft_readiness import (
     AircraftServiceEvent, EquipmentMail, record_service, validate_aircraft_details,
-    validate_pilot, deliver_mail, preserve_legacy_aircraft_fields, qualified_on, with_aircraft_identities, aircraft_key,
+    validate_pilot, pilot_valid_until, pilots, PilotProfile, deliver_mail, preserve_legacy_aircraft_fields, qualified_on, with_aircraft_identities, aircraft_key,
 )
 
 
@@ -37,6 +37,26 @@ class ReadinessTest(unittest.IsolatedAsyncioTestCase):
     def report(self, **overrides):
         return {"eventId": str(uuid4()), "status": "out_of_service", "revision": 0,
                 "note": "Damaged propeller", "selfRemediation": True, **overrides}
+
+    async def test_roster_accepts_certificate_only_and_preserves_optional_dates(self):
+        from datetime import date
+        profile = validate_pilot({"callsign": "1SAR7", "status": "active", "certificateNumber": "123",
+                                  "certificateDate": date.today().isoformat()})
+        async with self.store.sessions() as session:
+            session.add(PilotProfile(member_id="pilot", organization_id="org", callsign_key="1sar7",
+                                     data_json=json.dumps(profile)))
+            await session.commit()
+        roster = await pilots(self.store, "org")
+        self.assertEqual(1, len(roster))
+        self.assertTrue(roster[0]["eligible"])
+        self.assertEqual("", roster[0]["initialKnowledgeDate"])
+        self.assertEqual("", roster[0]["recurrentTrainingDate"])
+        self.assertEqual([], await pilots(self.store, "other"))
+        async with self.store.sessions() as session:
+            member = await session.get(OrganizationUser, "pilot")
+            member.state = "disabled"
+            await session.commit()
+        self.assertFalse((await pilots(self.store, "org"))[0]["eligible"])
 
     async def test_service_retries_are_idempotent_and_attributed(self):
         payload = self.report(username="spoof@example.test")
@@ -154,7 +174,22 @@ class ReadinessValidationTest(unittest.TestCase):
                  "certificateDate": "2020-01-01", "recurrentTrainingDate": "2024-09-10"}
         self.assertTrue(qualified_on(pilot, date(2026, 9, 30)))
         self.assertFalse(qualified_on(pilot, date(2026, 10, 1)))
-        self.assertFalse(qualified_on({**pilot, "recurrentTrainingDate": ""}, date(2021, 1, 1)))
+        self.assertTrue(qualified_on({**pilot, "recurrentTrainingDate": ""}, date(2021, 1, 1)))
+
+    def test_certificate_date_alone_supports_tracking(self):
+        from datetime import date
+        pilot = validate_pilot({"callsign": "1SAR7", "status": "active", "certificateNumber": "123",
+                               "certificateDate": "2025-02-28"})
+        self.assertEqual("2027-02-28", pilot_valid_until(pilot))
+        self.assertTrue(qualified_on(pilot, date(2026, 9, 13)))
+        self.assertTrue(qualified_on(pilot, date(2027, 2, 28)))
+        self.assertFalse(qualified_on(pilot, date(2027, 3, 1)))
+        self.assertFalse(qualified_on(pilot, date(2025, 2, 27)))
+        self.assertEqual("", pilot_valid_until({**pilot, "status": "inactive"}))
+        self.assertEqual("2027-01-31", pilot_valid_until({**pilot, "initialKnowledgeDate": "2025-01-10"}))
+        self.assertEqual("2028-09-30", pilot_valid_until({**pilot, "recurrentTrainingDate": "2026-09-01"}))
+        # Later optional training cannot qualify a flight during an earlier gap.
+        self.assertFalse(qualified_on({**pilot, "recurrentTrainingDate": "2027-04-01"}, date(2027, 3, 1)))
 
     def test_unknown_weight_is_not_zero(self):
         self.assertIsNone(validate_aircraft_details({})["baseWeightGrams"])

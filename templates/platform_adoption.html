@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Organization adoption{% endblock %}
+{% block extra_head %}
+<style>
+  .adoption {max-width:1400px;margin:24px auto;padding:0 20px;color:#20303d}
+  .adoption h1 {margin-bottom:8px} .adoption p {line-height:1.5;max-width:1000px}
+  .adoption form {display:flex;gap:16px;align-items:end;flex-wrap:wrap;margin:24px 0}
+  .adoption label {display:grid;gap:6px} .adoption input,.adoption select,.adoption button {padding:9px}
+  .adoption .cards {display:flex;flex-wrap:wrap;gap:16px;margin:22px 0}
+  .adoption .card {background:#edf4fa;border-radius:8px;padding:16px;min-width:120px}
+  .adoption .card strong {display:block;font-size:1.7rem}
+  .adoption .scroll {overflow-x:auto} .adoption table {border-collapse:collapse;width:100%;font-size:.95rem}
+  .adoption th,.adoption td {text-align:left;padding:12px;border-bottom:1px solid #d8e1e7;white-space:nowrap}
+  .adoption th {background:#edf4fa} .adoption small {display:block;color:#536675}
+  .adoption details {margin:20px 0} .adoption summary {cursor:pointer;font-weight:bold}
+</style>
+{% endblock %}
+{% block content %}
+<section class="adoption">
+  <a href="/platform-admin/organizations">← Organizations</a>
+  <h1>Organization adoption</h1>
+  <p>Recorded flight activity reaching Tracker. Compare completed calendar periods to identify first use,
+     repeat use, and organizations that may benefit from training or follow-up.</p>
+  <form method="get">
+    <label>Period<select name="period">{% for value in ['daily','weekly','monthly'] %}<option value="{{ value }}" {% if report.period == value %}selected{% endif %}>{{ value|capitalize }}</option>{% endfor %}</select></label>
+    <label>As of<input type="date" name="as_of" value="{{ report.as_of }}" required></label>
+    <label>Time zone<input name="timezone_name" value="{{ report.timezone }}" required></label>
+    <button type="submit">View report</button>
+  </form>
+  <p><strong>{{ report.period_start }} to {{ report.period_end_exclusive }} (end exclusive)</strong><br>
+     Compared with {{ report.previous_start }} to {{ report.period_start }} · {{ report.timezone }}<br>
+     <a href="?{{ export_query }}&amp;format=csv">Download flight rows (CSV)</a> ·
+     <a href="?{{ export_query }}&amp;format=json">Download complete report (JSON)</a></p>
+  <div class="cards">
+    <div class="card"><strong>{{ report.totals.active_organizations }}</strong>Active organizations<small>Previous: {{ report.totals.previous_active_organizations }}</small></div>
+    <div class="card"><strong>{{ report.totals.new_organizations }}</strong>First recorded use</div>
+    <div class="card"><strong>{{ report.totals.retained_organizations }}</strong>Active in both periods</div>
+    <div class="card"><strong>{{ report.totals.reactivated_organizations }}</strong>Returned after a gap</div>
+    <div class="card"><strong>{{ report.totals.quiet_organizations }}</strong>No flights this period</div>
+    <div class="card"><strong>{% if report.totals.organization_retention_percent is not none %}{{ report.totals.organization_retention_percent }}%{% else %}—{% endif %}</strong>Organization retention</div>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>Organization</th><th>Activity</th><th>First recorded flight</th><th>Flights</th><th>Change</th><th>Minutes</th><th>Pilots</th><th>Active days</th></tr></thead>
+    <tbody>{% for row in report.organizations %}<tr>
+      <td>{{ row.organization }}<small>{{ row.designator }}</small></td><td>{{ row.status }}</td><td>{{ row.first_recorded_flight or 'None recorded' }}</td>
+      <td>{{ row.current.flights }}<small>Previous: {{ row.previous.flights }}</small></td>
+      <td>{{ '%+d'|format(row.flight_change) }}<small>{% if row.flight_change_percent is not none %}{{ '%+.1f'|format(row.flight_change_percent) }}%{% else %}No prior baseline{% endif %}</small></td>
+      <td>{{ row.current.minutes }}<small>Change: {{ '%+.2f'|format(row.minutes_change) }}</small></td>
+      <td>{{ row.current.pilots }}<small>Previous: {{ row.previous.pilots }} · Both: {{ row.retained_pilots }}</small><small>{{ row.current.unknown_pilot_flights }} flights with unknown pilot</small></td>
+      <td>{{ row.current.active_days }}<small>Previous: {{ row.previous.active_days }}</small></td>
+    </tr>{% else %}<tr><td colspan="8">No organizations or retained flight records found.</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <details><summary>Aircraft and data coverage</summary>
+    {% for row in report.organizations if row.current.flights %}<p><strong>{{ row.organization }}</strong>:
+    {% for model, count in row.current.models.items() %}{{ model }}: {{ count }}{% if not loop.last %}; {% endif %}{% endfor %}.
+    {{ row.current.unknown_duration_flights }} flights with unknown duration.</p>{% endfor %}
+    <p>Flight counts include retained uploaded and imported records, including zero-duration observations.
+       They do not establish installs, signups, mission counts, or a historical confirmation audit.
+       Duration is the recorded observation interval. Missing uploads and deleted records limit coverage;
+       late uploads and corrections can revise earlier periods.</p>
+    <p>“New” means the first flight in retained history. “Retained” means activity in both adjacent periods;
+       retention is retained organizations divided by previously active organizations. “Quiet” does not mean a lost customer.
+       Weeks begin Monday; months use calendar boundaries and may differ in length.
+       Unassigned flights are excluded from organization adoption totals.</p>
+    <p>Pilot counts use matched historical member identities only. Unresolved and legacy labels are not counted as distinct pilots.
+       Exported pilot numbers are pseudonymous, scoped to the organization, and stable while the server signing key remains unchanged.
+       Organization names remain visible. Treat exports as internal data.</p>
+  </details>
+</section>
+{% endblock %}
