@@ -1,4 +1,4 @@
-v1.4.92:
+v1.4.92: deployed
 * Add an administrator-only adoption report comparing completed daily, weekly, and monthly periods, with organization activity and protected pilot identifiers in exports.
 * Accept certificate issue dates for organization pilot tracking when optional initial test dates are absent.
 * Preserve tablet incident briefing details during historical operating-profile corrections and show the latest recorded selection; clarify reusable organization profiles and optional map restrictions.
