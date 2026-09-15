@@ -1,4 +1,4 @@
-v1.4.91: not deployed
+v1.4.91:
 * Organization owners automatically inherit all standard organization capabilities, including configuration administration, even when their account predates a capability.
 * Distinguish separate recordings with numbered aircraft labels per tablet and local day, retain separate playback links, and mark recordings under ten seconds as Short clip.
 * Include sent and received audio byte counts in browser diagnostics to help diagnose one-way voice during video sessions.
