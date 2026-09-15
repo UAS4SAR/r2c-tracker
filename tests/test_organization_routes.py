@@ -693,6 +693,38 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             tuple(stream.session_id for stream in sorted_streams),
         )
 
+    def test_recording_page_distinguishes_short_clips_and_preserves_filtered_label(self):
+        organization = asyncio.run(self.store.create_organization(
+            legal_name="SAR", designator="NCSSAR", admin_name="Owner",
+            admin_email="owner@example.test", postal_address="Address",
+            actor_id="platform-admin", simulation=True))
+        owner = asyncio.run(self.store.list_users(organization.id))[0]
+        now = datetime.now(UTC)
+        clips = [SimpleNamespace(
+            id=f"clip-{number}", session_id=f"clip-{number}",
+            organization_id=organization.id, device_credential_id="ipad",
+            device_name="Demo iPad", incident_name="Demo", drone_designator="Drone",
+            media_kind="recording", recorded_at=now + timedelta(seconds=number),
+            recorded_at_local=now + timedelta(seconds=number), duration_ms=duration,
+            last_seen_at=now, expires_at=now + timedelta(minutes=10),
+            source_width=1280, source_height=720, source_fps=30,
+            source_bitrate_bps=2500000, source_codec="h264",
+            thumbnail_revision="preview", remote_control_enabled=False,
+        ) for number, duration in [(1, 2200), (2, 112000)]]
+        with patch.object(main, "require_organization_user", AsyncMock(return_value=(organization, owner))), \
+             patch.object(self.store, "list_active_video_streams", AsyncMock(return_value=clips)):
+            page = self.client.get("/ncssar/streams")
+            self.assertEqual(200, page.status_code, page.text)
+            self.assertIn("Drone-1", page.text)
+            self.assertIn("Drone-2", page.text)
+            self.assertIn("Short clip", page.text)
+            self.assertIn('/ncssar/streams/clip-1/request', page.text)
+            self.assertIn('/ncssar/streams/clip-2/request', page.text)
+            filtered = self.client.get("/ncssar/streams?session=clip-2")
+            self.assertEqual(200, filtered.status_code, filtered.text)
+            self.assertIn("Drone-2", filtered.text)
+            self.assertNotIn("Short clip", filtered.text)
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         database_path = Path(self.temp_dir.name) / "control-plane.db"

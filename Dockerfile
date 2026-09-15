@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir -r requirements.lock
 # Copy the application code
 COPY main.py .
 COPY aircraft_readiness.py flight_readiness_records.py operating_profiles.py readiness_audit.py ./
-COPY runtime_io.py .
+COPY runtime_io.py recording_presentation.py ./
 COPY faa_proxy.py .
 COPY control_plane.py .
 COPY subscription_plans.py .

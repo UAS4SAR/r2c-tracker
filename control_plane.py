@@ -424,7 +424,10 @@ class OrganizationUser(Base):
         values = json.loads(self.roles_json or "[]")
         normalized_roles = {value for value in values if value in ROLE_NAMES}
         if "organization_owner" in normalized_roles:
-            normalized_roles.add("r2c_device")
+            # Resolve authority on read so owners created before a capability
+            # was introduced inherit it without rewriting their stored roles.
+            # Equipment-manager notifications remain an explicit assignment.
+            normalized_roles.update(DEFAULT_OWNER_ROLES)
         if "r2c_device" in normalized_roles:
             normalized_roles.add("records_viewer")
         return tuple(sorted(normalized_roles))

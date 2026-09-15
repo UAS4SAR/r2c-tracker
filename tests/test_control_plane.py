@@ -41,6 +41,43 @@ from control_plane import (
 
 
 class ControlPlaneStoreTest(unittest.TestCase):
+    def test_legacy_owner_inherits_all_owner_capabilities_without_rewrite(self):
+        owner = OrganizationUser(roles_json='["organization_owner"]')
+        self.assertEqual(set(DEFAULT_OWNER_ROLES), set(owner.roles))
+        self.assertIn("config_admin", owner.roles)
+        self.assertEqual('["organization_owner"]', owner.roles_json)
+        self.assertNotIn("equip_manager", owner.roles)
+
+    def test_delegated_admin_does_not_inherit_owner_capabilities(self):
+        member = OrganizationUser(roles_json='["user_admin"]')
+        self.assertEqual(("user_admin",), member.roles)
+
+    def test_stored_legacy_owner_exposes_config_admin_to_authorization(self):
+        organization = self.create_organization()
+
+        async def read_legacy_owner():
+            async with self.store.sessions() as session:
+                from sqlalchemy import select
+                owner = await session.scalar(select(OrganizationUser).where(
+                    OrganizationUser.organization_id == organization.id))
+                owner.roles_json = '["organization_owner"]'
+                owner_id = owner.id
+                await session.commit()
+            return await self.store.get_user(owner_id)
+
+        owner = asyncio.run(read_legacy_owner())
+        self.assertEqual(organization.id, owner.organization_id)
+        self.assertIn("config_admin", owner.roles)
+        members = asyncio.run(self.store.list_users(organization.id))
+        self.assertIn("config_admin", members[0].roles)
+
+    def test_owner_role_removal_removes_inherited_capabilities(self):
+        member = OrganizationUser(roles_json='["organization_owner", "equip_manager"]')
+        self.assertIn("config_admin", member.roles)
+        self.assertIn("equip_manager", member.roles)
+        member.set_roles(("r2c_device",))
+        self.assertEqual({"r2c_device", "records_viewer"}, set(member.roles))
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         database_path = Path(self.temp_dir.name) / "control-plane.db"

@@ -27,6 +27,7 @@ from urllib.parse import quote, urlencode
 from pprint import pprint
 from datetime import datetime, date, timedelta, timezone, UTC
 from zoneinfo import ZoneInfo
+from recording_presentation import recording_labels
 from timezonefinder import TimezoneFinder
 from typing import Optional, Annotated, Literal
 from contextlib import asynccontextmanager
@@ -10081,6 +10082,9 @@ async def organization_streams(
         )
         if not streams:
             raise HTTPException(status_code=404, detail="Captured stream not found.")
+    # Compute labels before a session-specific link narrows the list so the
+    # same clip keeps its label on both the catalog and its individual page.
+    stream_recording_labels = recording_labels(streams)
     if clean_session:
         streams = tuple(
             item for item in streams
@@ -10168,6 +10172,7 @@ async def organization_streams(
             "organization": organization,
             "organization_user": user,
             "streams": streams,
+            "recording_labels": stream_recording_labels,
             "stream_tablet_codes": {
                 stream.session_id: tablet_link_code(
                     organization.designator,
@@ -11009,7 +11014,7 @@ async def organization_video_media_metrics(
             "elementReady=%s paused=%s element=%sx%s packets=%s bytes=%s "
             "framesReceived=%s framesDecoded=%s framesPresented=%s "
             "framesDropped=%s keyFrames=%s "
-            "codec=%s decoder=%s",
+            "codec=%s decoder=%s audioSent=%s audioReceived=%s",
             request_id,
             payload.metrics_session_id,
             payload.diagnostic_event,
@@ -11032,6 +11037,8 @@ async def organization_video_media_metrics(
             payload.video_key_frames_decoded,
             payload.video_codec,
             payload.decoder_implementation,
+            payload.audio_bytes_sent,
+            payload.audio_bytes_received,
         )
         return {"accepted": True, "totalBytes": result.total_media_bytes}
     except ControlPlaneError as exc:
