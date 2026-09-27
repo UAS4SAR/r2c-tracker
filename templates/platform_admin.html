@@ -642,7 +642,7 @@
     <div class="panel-heading">
       <div>
         <h2>Managed pilot requests</h2>
-        <p>Contact information submitted through rid2caltopo.org.</p>
+        <p>Requests submitted through rid2caltopo.org. Status follows the linked organization; closing a request does not change organization access.</p>
       </div>
     </div>
     <div class="organization-table-scroll" tabindex="0">
@@ -655,11 +655,12 @@
             <th>Submitted</th>
             <th>Safety terms</th>
             <th>Status</th>
+            <th>Follow-up</th>
           </tr>
         </thead>
         <tbody>
           {% for access_request in managed_access_requests %}
-          <tr>
+          <tr id="managed-request-{{ access_request.id }}">
             <td>
               <div class="org-name">{{ access_request.designator }} · {{ access_request.organization_name }}</div>
               <div class="secondary-text">{{ access_request.source_host }}</div>
@@ -687,10 +688,54 @@
               <span class="secondary-text">Legacy request; not recorded</span>
               {% endif %}
             </td>
-            <td><span class="status-badge">{{ access_request.state }}</span></td>
+            <td>
+              <span class="status-badge">{{ access_request.state|capitalize }}</span>
+              {% if access_request.organization_id %}
+              <div><a href="#organization-{{ access_request.organization_designator|lower }}">View organization</a></div>
+              {% elif access_request.state == 'designator in use' %}
+              <div class="secondary-text">This designator belongs to an organization with a different administrator. Review before following up.</div>
+              {% endif %}
+              {% if access_request.resolution_note %}
+              <div class="secondary-text">{{ access_request.resolution_note }}</div>
+              {% endif %}
+            </td>
+            <td>
+              {% if control_plane_enabled %}
+              {% if access_request.can_create %}
+              <details class="contact-editor">
+                <summary>Create organization</summary>
+                <p>Create {{ access_request.designator }} with {{ access_request.requester_email }} as its administrator{% if not control_plane_simulation %} and send an activation invitation{% endif %}. Extended-beta access has a platform-funded $20 monthly usage allowance; no payments are collected.</p>
+                <form method="post" action="/platform-admin/managed-requests/{{ access_request.id }}/create">
+                  <input type="hidden" name="form_token" value="{{ csrf_token }}">
+                  <button type="submit" {% if not control_plane_simulation and not email_delivery_configured %}disabled{% endif %}>{{ "Create simulation organization" if control_plane_simulation else "Create organization and send invitation" }}</button>
+                </form>
+              </details>
+              {% endif %}
+              {% if access_request.can_email and not control_plane_simulation %}
+              <form method="post" action="/platform-admin/managed-requests/{{ access_request.id }}/send-invitation">
+                <input type="hidden" name="form_token" value="{{ csrf_token }}">
+                <button type="submit" {% if not email_delivery_configured %}disabled{% endif %}>{{ "Send access email" if access_request.state == 'activated' else "Resend activation email" }}</button>
+                <div class="secondary-text">To {{ access_request.administrator_email }}</div>
+              </form>
+              {% endif %}
+              <details class="contact-editor">
+                <summary>{{ "Reopen request" if access_request.state in ('closed', 'declined') else "Close or decline request" }}</summary>
+                <form class="contact-edit-form" method="post" action="/platform-admin/managed-requests/{{ access_request.id }}/{{ 'reopen' if access_request.state in ('closed', 'declined') else 'close' }}">
+                  <input type="hidden" name="form_token" value="{{ csrf_token }}">
+                  <label>Follow-up note <textarea name="note" required maxlength="2000"></textarea></label>
+                  {% if access_request.state in ('closed', 'declined') %}
+                  <button type="submit">Reopen request</button>
+                  {% else %}
+                  <button type="submit">Close request</button>
+                  <button type="submit" formaction="/platform-admin/managed-requests/{{ access_request.id }}/decline">Decline request</button>
+                  {% endif %}
+                </form>
+              </details>
+              {% endif %}
+            </td>
           </tr>
           {% else %}
-          <tr><td colspan="6" class="secondary-text">No managed pilot requests have been received.</td></tr>
+          <tr><td colspan="7" class="secondary-text">No managed pilot requests have been received.</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -779,7 +824,7 @@
         </thead>
         <tbody>
           {% for organization in snapshot.organizations %}
-          <tr>
+          <tr id="organization-{{ organization.designator|lower }}">
             <td>
               <div class="org-name">{{ organization.designator }} · {{ organization.legal_name }}</div>
               <div class="org-hostname">

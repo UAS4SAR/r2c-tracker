@@ -1037,6 +1037,105 @@ class ControlPlaneStoreTest(unittest.TestCase):
                 )
             )
 
+    def create_pilot_request(self, **overrides):
+        values = dict(
+            requester_name="Primary Administrator", requester_email="admin@ncssar.example",
+            requester_phone="555-0100", organization_name="North County Search and Rescue",
+            designator="NCSSAR", source_host="rid2caltopo.org",
+            terms_acknowledged=True, terms_version=MANAGED_ACCESS_TERMS_VERSION,
+        )
+        values.update(overrides)
+        return asyncio.run(self.store.create_managed_access_request(**values))
+
+    def test_pilot_requests_follow_activation_and_keep_link_after_owner_replacement(self):
+        request = self.create_pilot_request()
+        stranger = self.create_pilot_request(requester_email="different@example.test")
+        organization = self.create_organization(simulation=False, managed_request_id=request.id)
+        rows = {row.id: row for row in asyncio.run(self.store.list_managed_access_requests())}
+        self.assertEqual("awaiting activation", rows[request.id].state)
+        self.assertEqual(organization.id, rows[request.id].organization_id)
+        self.assertEqual("designator in use", rows[stranger.id].state)
+        self.assertFalse(rows[stranger.id].can_email)
+        self.assertFalse(rows[stranger.id].can_create)
+        asyncio.run(self.store.activate_owner(
+            "NCSSAR", "admin@ncssar.example", "correct horse battery staple", self.now,
+        ))
+        rows = {row.id: row for row in asyncio.run(self.store.list_managed_access_requests())}
+        self.assertEqual("activated", rows[request.id].state)
+        asyncio.run(self.store.update_organization_administrator(
+            designator="NCSSAR", legal_name=organization.legal_name,
+            admin_name="Replacement", admin_email="replacement@example.test",
+            admin_phone="", postal_address="", actor_id="platform-admin",
+        ))
+        rows = {row.id: row for row in asyncio.run(self.store.list_managed_access_requests())}
+        self.assertEqual(organization.id, rows[request.id].organization_id)
+        self.assertEqual("replacement@example.test", rows[request.id].administrator_email)
+        self.assertEqual("awaiting activation", rows[request.id].state)
+
+    def test_request_submitted_after_activation_is_already_fulfilled(self):
+        organization = self.create_organization(simulation=False)
+        asyncio.run(self.store.activate_owner(
+            "NCSSAR", "admin@ncssar.example", "correct horse battery staple", self.now,
+        ))
+        self.create_pilot_request()
+        row, = asyncio.run(self.store.list_managed_access_requests())
+        self.assertEqual("activated", row.state)
+        self.assertEqual(organization.id, row.organization_id)
+        self.assertTrue(row.can_email)
+        self.assertFalse(row.can_create)
+
+    def test_request_resolution_is_audited_reversible_and_preserves_organization(self):
+        request = self.create_pilot_request()
+        for state in ("closed", "declined"):
+            asyncio.run(self.store.resolve_managed_access_request(
+                request_id=request.id, state=state, note="Test follow-up", actor_id="platform-admin",
+            ))
+            row, = asyncio.run(self.store.list_managed_access_requests())
+            self.assertEqual(state, row.state)
+            self.assertFalse(row.can_create)
+            with self.assertRaises(ControlPlaneError):
+                self.create_organization(managed_request_id=request.id)
+            asyncio.run(self.store.resolve_managed_access_request(
+                request_id=request.id, state="pending", note="Resume testing", actor_id="platform-admin",
+            ))
+        organization = self.create_organization(simulation=False, managed_request_id=request.id)
+        asyncio.run(self.store.resolve_managed_access_request(
+            request_id=request.id, state="closed", note="Handled", actor_id="platform-admin",
+        ))
+        after = asyncio.run(self.store.get_organization("NCSSAR"))
+        self.assertEqual(organization.provisioning_state, after.provisioning_state)
+        self.assertEqual(organization.lifecycle_state, after.lifecycle_state)
+        events = asyncio.run(self.store.list_audit_events())
+        self.assertTrue(any(event.event_type == "organization.request_closed" for event in events))
+        self.assertTrue(any(event.event_type == "organization.request_reopened" for event in events))
+        self.assertTrue(any(event.event_type == "organization.request_created" for event in events))
+
+    def test_request_schema_upgrade_links_only_matching_administrators(self):
+        organization = self.create_organization(simulation=False)
+        self.create_pilot_request()
+        self.create_pilot_request(requester_email="different@example.test")
+        # Reconstruct the old intake schema, including its retained submissions.
+        path = Path(self.temp_dir.name) / "control-plane.db"
+        connection = sqlite3.connect(path)
+        try:
+            columns = [row[1] for row in connection.execute("PRAGMA table_info(managed_access_requests)")
+                       if row[1] not in ("organization_id", "resolution_note")]
+            column_list = ", ".join(columns)
+            connection.execute(f"CREATE TABLE legacy_requests AS SELECT {column_list} FROM managed_access_requests")
+            connection.execute("DROP TABLE managed_access_requests")
+            connection.execute("ALTER TABLE legacy_requests RENAME TO managed_access_requests")
+            connection.commit()
+        finally:
+            connection.close()
+        asyncio.run(self.store.init())
+        asyncio.run(self.store.init())
+        rows = {row.requester_email: row for row in asyncio.run(self.store.list_managed_access_requests())}
+        self.assertEqual(organization.id, rows["admin@ncssar.example"].organization_id)
+        self.assertIsNone(rows["different@example.test"].organization_id)
+        self.assertEqual("awaiting activation", rows["admin@ncssar.example"].state)
+        self.assertEqual("designator in use", rows["different@example.test"].state)
+        self.assertEqual(MANAGED_ACCESS_TERMS_VERSION, rows["admin@ncssar.example"].terms_version)
+
     def test_replacement_administrator_activation_does_not_restart_trial(self):
         organization = self.create_organization(simulation=False)
         first_activation = self.now + timedelta(hours=1)

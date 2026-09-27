@@ -1,3 +1,7 @@
+v1.4.94:
+* Resolve managed pilot requests from platform administration: create an organization and send its invitation, resend activation or access emails, and close, decline, or reopen requests with an audited follow-up note.
+* Show linked organization activation status for existing requests, including requests submitted after activation. Match both the requested designator and administrator email, and preserve request links when administrators change.
+
 v1.4.93: deployed
 * Include billing exports from both previous and current billing accounts, keeping one export format per account to avoid duplicate costs. Report freshness from the combined project-scoped data without assuming a Google backlog.
 * Clarify adoption reports with a recorded-flight total, explicit organization-count labels, named comparison periods, and a completed-period explanation. Improve table heading contrast and label identified pilot counts.

@@ -374,6 +374,8 @@ class ManagedAccessRequest(Base):
     __tablename__ = "managed_access_requests"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[Optional[str]] = mapped_column(ForeignKey("organizations.id"))
+    resolution_note: Mapped[str] = mapped_column(Text, default="")
     requester_name: Mapped[str] = mapped_column(String(160), nullable=False)
     requester_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
     requester_phone: Mapped[str] = mapped_column(String(64), default="")
@@ -1196,6 +1198,12 @@ class ManagedAccessRequestRecord:
     terms_version: str
     terms_acknowledged_at: Optional[datetime]
     submitted_at: datetime
+    organization_id: Optional[str] = None
+    organization_designator: str = ""
+    administrator_email: str = ""
+    resolution_note: str = ""
+    can_create: bool = False
+    can_email: bool = False
 
 
 @dataclass(frozen=True)
@@ -1897,6 +1905,27 @@ class ControlPlaneStore:
                 await connection.execute(text(
                     "ALTER TABLE managed_access_requests "
                     "ADD COLUMN terms_version VARCHAR(32) DEFAULT '' NOT NULL"
+                ))
+            if "organization_id" not in managed_request_columns:
+                await connection.execute(text(
+                    "ALTER TABLE managed_access_requests ADD COLUMN organization_id "
+                    "VARCHAR(36) REFERENCES organizations(id)"
+                ))
+                # Recognize requests submitted after an organization was created.
+                # A designator alone is not evidence of the requester's identity.
+                await connection.execute(text(
+                    "UPDATE managed_access_requests SET organization_id = ("
+                    "SELECT organizations.id FROM organizations "
+                    "JOIN organization_contacts ON organization_contacts.organization_id = organizations.id "
+                    "WHERE organizations.designator = managed_access_requests.designator "
+                    "AND organization_contacts.contact_role = 'primary_admin' "
+                    "AND organization_contacts.email = managed_access_requests.requester_email) "
+                    "WHERE state NOT IN ('closed', 'declined')"
+                ))
+            if "resolution_note" not in managed_request_columns:
+                await connection.execute(text(
+                    "ALTER TABLE managed_access_requests ADD COLUMN resolution_note "
+                    "TEXT DEFAULT '' NOT NULL"
                 ))
             if "terms_acknowledged_at" not in managed_request_columns:
                 timestamp_type = (
@@ -2804,6 +2833,7 @@ class ControlPlaneStore:
         simulation: bool = True,
         now: Optional[datetime] = None,
         admin_phone: str = "",
+        managed_request_id: Optional[str] = None,
     ) -> OrganizationRecord:
         created_at = now or utc_now()
         clean_name = legal_name.strip()
@@ -2895,6 +2925,19 @@ class ControlPlaneStore:
             created_at=created_at,
         )
         async with self.sessions() as session:
+            if managed_request_id is not None:
+                access_request = await session.scalar(
+                    select(ManagedAccessRequest)
+                    .where(ManagedAccessRequest.id == managed_request_id)
+                )
+                if (
+                    access_request is None
+                    or access_request.state in ("closed", "declined")
+                    or access_request.organization_id is not None
+                    or access_request.designator != clean_designator
+                    or access_request.requester_email != clean_email
+                ):
+                    raise ControlPlaneError("This request is no longer available for organization creation. Refresh the request list.")
             existing = await session.scalar(
                 select(Organization.id).where(
                     (Organization.designator == clean_designator)
@@ -2910,14 +2953,35 @@ class ControlPlaneStore:
                 session.add(organization)
                 await session.flush()
                 session.add_all((contact, owner, job, subscription, audit))
+                if managed_request_id is not None:
+                    # Claim only after reserving the unique designator, so two
+                    # duplicate requests cannot deadlock while linking each other.
+                    claimed = await session.execute(
+                        update(ManagedAccessRequest).where(
+                            ManagedAccessRequest.id == managed_request_id,
+                            ManagedAccessRequest.state.not_in(("closed", "declined")),
+                            ManagedAccessRequest.organization_id.is_(None),
+                        ).values(organization_id=organization.id)
+                    )
+                    if claimed.rowcount != 1:
+                        raise ControlPlaneError("This request changed during organization creation. Refresh the request list.")
                 await session.execute(
                     update(ManagedAccessRequest)
                     .where(
                         ManagedAccessRequest.designator == clean_designator,
+                        ManagedAccessRequest.requester_email == clean_email,
                         ManagedAccessRequest.state == "pending",
                     )
-                    .values(state="organization created", updated_at=created_at)
+                    .values(state="organization created", organization_id=organization.id, updated_at=created_at)
                 )
+                if managed_request_id is not None:
+                    session.add(ControlPlaneAuditEvent(
+                        organization_id=organization.id,
+                        actor_type="platform_admin", actor_id=actor_id,
+                        event_type="organization.request_created",
+                        details_json=json.dumps({"request_id": managed_request_id}),
+                        created_at=created_at,
+                    ))
                 await session.commit()
             except IntegrityError as exc:
                 await session.rollback()
@@ -3245,6 +3309,16 @@ class ControlPlaneStore:
                 existing.terms_version = clean_terms_version
                 existing.terms_acknowledged_at = submitted_at
                 existing.updated_at = submitted_at
+            if existing.organization_id is None:
+                existing.organization_id = await session.scalar(
+                    select(Organization.id)
+                    .join(OrganizationContact, OrganizationContact.organization_id == Organization.id)
+                    .where(
+                        Organization.designator == clean_designator,
+                        OrganizationContact.contact_role == "primary_admin",
+                        OrganizationContact.email == clean_email,
+                    )
+                )
             await session.commit()
             return ManagedAccessRequestRecord(
                 id=existing.id,
@@ -3271,6 +3345,18 @@ class ControlPlaneStore:
                     )
                 )
             ).all()
+            organizations = {
+                organization.designator: (organization, contact, owner_state)
+                for organization, contact, owner_state in (await session.execute(
+                    select(Organization, OrganizationContact, OrganizationUser.state)
+                    .join(OrganizationContact, OrganizationContact.organization_id == Organization.id)
+                    .outerjoin(OrganizationUser, (
+                        (OrganizationUser.organization_id == Organization.id)
+                        & (OrganizationUser.email == OrganizationContact.email)
+                    ))
+                    .where(OrganizationContact.contact_role == "primary_admin")
+                )).all()
+            }
         return tuple(
             ManagedAccessRequestRecord(
                 id=row.id,
@@ -3279,14 +3365,100 @@ class ControlPlaneStore:
                 requester_phone=row.requester_phone,
                 organization_name=row.organization_name,
                 designator=row.designator,
-                state=row.state,
+                state=self._managed_request_status(row, organizations.get(row.designator)),
                 source_host=row.source_host,
                 terms_version=row.terms_version,
                 terms_acknowledged_at=as_utc(row.terms_acknowledged_at),
                 submitted_at=as_utc(row.submitted_at),
+                organization_id=self._managed_request_organization_id(row, organizations.get(row.designator)),
+                organization_designator=(
+                    row.designator if self._managed_request_organization_id(row, organizations.get(row.designator)) else ""
+                ),
+                administrator_email=(
+                    organizations[row.designator][1].email
+                    if self._managed_request_organization_id(row, organizations.get(row.designator)) else ""
+                ),
+                resolution_note=row.resolution_note,
+                can_create=(row.state not in ("closed", "declined") and row.designator not in organizations),
+                can_email=(
+                    self._managed_request_status(row, organizations.get(row.designator))
+                    in ("activated", "awaiting activation", "simulation")
+                ),
             )
             for row in rows
         )
+
+    @staticmethod
+    def _managed_request_organization_id(row, organization_contact) -> Optional[str]:
+        if organization_contact is None:
+            return None
+        organization, contact, _owner_state = organization_contact
+        if row.organization_id == organization.id or (
+            row.organization_id is None and row.requester_email == contact.email
+        ):
+            return organization.id
+        return None
+
+    @classmethod
+    def _managed_request_status(cls, row, organization_contact) -> str:
+        if row.state in ("closed", "declined"):
+            return row.state
+        if organization_contact is None:
+            return "pending"
+        organization, _contact, owner_state = organization_contact
+        if cls._managed_request_organization_id(row, organization_contact) is None:
+            return "designator in use"
+        if organization.lifecycle_state == "archived":
+            return "organization archived"
+        if owner_state == "invited" and organization.provisioning_state != "simulation ready":
+            return "awaiting activation"
+        if organization.provisioning_state == "ready" and owner_state == "active":
+            return "activated"
+        if organization.provisioning_state == "simulation ready":
+            return "simulation"
+        return "needs review"
+
+    async def resolve_managed_access_request(
+        self, *, request_id: str, state: str, note: str, actor_id: str,
+    ) -> None:
+        if state not in ("closed", "declined", "pending"):
+            raise ControlPlaneError("Choose close, decline, or reopen.")
+        clean_note = note.strip()
+        if not clean_note or len(clean_note) > 2000:
+            raise ControlPlaneError("Enter a follow-up note of 1 to 2000 characters.")
+        async with self.sessions() as session:
+            row = await session.scalar(select(ManagedAccessRequest).where(
+                ManagedAccessRequest.id == request_id).with_for_update())
+            if row is None:
+                raise ControlPlaneError("Managed pilot request not found.")
+            previous_state = row.state
+            if state == previous_state:
+                return
+            if state == "pending" and previous_state not in ("closed", "declined"):
+                raise ControlPlaneError("Only closed or declined requests can be reopened.")
+            row.state = state
+            row.resolution_note = clean_note
+            row.updated_at = utc_now()
+            if state == "pending" and row.organization_id is None:
+                row.organization_id = await session.scalar(
+                    select(Organization.id)
+                    .join(OrganizationContact, OrganizationContact.organization_id == Organization.id)
+                    .where(
+                        Organization.designator == row.designator,
+                        OrganizationContact.contact_role == "primary_admin",
+                        OrganizationContact.email == row.requester_email,
+                    )
+                )
+            session.add(ControlPlaneAuditEvent(
+                organization_id=row.organization_id,
+                actor_type="platform_admin", actor_id=actor_id,
+                event_type="organization.request_" + ("reopened" if state == "pending" else state),
+                details_json=json.dumps({
+                    "request_id": row.id, "designator": row.designator,
+                    "previous_state": previous_state, "note": clean_note,
+                }),
+            ))
+            await session.commit()
 
     async def update_organization_administrator(
         self,
@@ -3415,9 +3587,10 @@ class ControlPlaneStore:
                 update(ManagedAccessRequest)
                 .where(
                     ManagedAccessRequest.designator == clean_designator,
+                    ManagedAccessRequest.requester_email == clean_email,
                     ManagedAccessRequest.state == "pending",
                 )
-                .values(state="organization created", updated_at=changed_at)
+                .values(state="organization created", organization_id=organization.id, updated_at=changed_at)
             )
             await session.commit()
         record = await self.get_organization(clean_designator)

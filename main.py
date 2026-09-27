@@ -7732,6 +7732,7 @@ async def platform_admin_create_organization(
         postal_address: Annotated[str, Form()],
         form_token: Annotated[str, Form()],
         admin_phone: Annotated[str, Form()] = "",
+        managed_request_id: Annotated[str, Form()] = "",
         user=Depends(check_platform_admin)):
     verify_csrf(request, "platform_organizations", form_token)
     if control_plane_store is None or control_plane_tokens is None:
@@ -7757,6 +7758,7 @@ async def platform_admin_create_organization(
             postal_address=postal_address,
             actor_id=user.id,
             simulation=CONTROL_PLANE_SIMULATION,
+            managed_request_id=managed_request_id or None,
         )
         invitation = await control_plane_store.get_invitation(
             organization.designator,
@@ -7804,6 +7806,55 @@ async def platform_admin_create_organization(
         url="/platform-admin/organizations",
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+
+@app.post("/platform-admin/managed-requests/{request_id}/{action}")
+async def platform_admin_follow_up_managed_request(
+        request: Request,
+        request_id: str,
+        action: str,
+        form_token: Annotated[str, Form()],
+        note: Annotated[str, Form()] = "",
+        user=Depends(check_platform_admin)):
+    verify_csrf(request, "platform_organizations", form_token)
+    if control_plane_store is None or control_plane_tokens is None:
+        raise HTTPException(status_code=503, detail="Organization administration is not configured.")
+    try:
+        access_request = next((
+            item for item in await control_plane_store.list_managed_access_requests()
+            if item.id == request_id
+        ), None)
+        if access_request is None:
+            raise ControlPlaneError("Managed pilot request not found.")
+        if action == "create":
+            if not access_request.can_create:
+                raise ControlPlaneError("This request cannot create an organization. Review its current status.")
+            return await platform_admin_create_organization(
+                request=request, legal_name=access_request.organization_name,
+                designator=access_request.designator,
+                admin_name=access_request.requester_name,
+                admin_email=access_request.requester_email,
+                admin_phone=access_request.requester_phone,
+                postal_address="", form_token=form_token,
+                managed_request_id=access_request.id, user=user,
+            )
+        if action == "send-invitation":
+            if not access_request.can_email:
+                raise ControlPlaneError("This request has no active organization invitation to send.")
+            return await platform_admin_send_organization_invitation(
+                request=request, designator=access_request.organization_designator,
+                form_token=form_token, user=user,
+            )
+        resolutions = {"close": "closed", "decline": "declined", "reopen": "pending"}
+        if action not in resolutions:
+            raise ControlPlaneError("Unknown managed pilot request action.")
+        await control_plane_store.resolve_managed_access_request(
+            request_id=request_id, state=resolutions[action], note=note, actor_id=user.id,
+        )
+        flash(request, "Request updated. Organization access has not been changed.", "success")
+    except ControlPlaneError as exc:
+        flash(request, str(exc), "warning")
+    return RedirectResponse(url="/platform-admin/organizations", status_code=303)
 
 
 @app.post("/platform-admin/organizations/{designator}/archive")
@@ -7993,7 +8044,10 @@ async def platform_admin_send_organization_invitation(
         organization = await control_plane_store.get_organization(designator)
         if organization is None:
             raise ControlPlaneError("Organization not found.")
-        if organization.provisioning_state == "ready":
+        pending_invitation = await control_plane_store.get_invitation(
+            organization.designator, organization.primary_admin_email,
+        )
+        if organization.provisioning_state == "ready" and pending_invitation is None:
             await asyncio.to_thread(
                 platform_admin_email_sender.send_organization_access,
                 recipient=organization.primary_admin_email,

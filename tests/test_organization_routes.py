@@ -2779,6 +2779,128 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertIn("Acknowledged", page.text)
         self.assertIn(MANAGED_ACCESS_TERMS_VERSION, page.text)
 
+    def create_pilot_request(self, **overrides):
+        values = dict(
+            requester_name="Primary Administrator", requester_email="admin@ncssar.example",
+            requester_phone="555-0100", organization_name="North County Search and Rescue",
+            designator="NCSSAR", source_host="rid2caltopo.org",
+            terms_acknowledged=True, terms_version=MANAGED_ACCESS_TERMS_VERSION,
+        )
+        values.update(overrides)
+        return asyncio.run(self.store.create_managed_access_request(**values))
+
+    def test_request_create_resend_activate_and_access_email_workflow(self):
+        request = self.create_pilot_request()
+        sender = FakeOrganizationEmailSender()
+        url = f"/platform-admin/managed-requests/{request.id}"
+        with patch.object(main, "CONTROL_PLANE_SIMULATION", False), patch.object(main, "platform_admin_email_sender", sender):
+            page = self.client.get("/platform-admin/organizations")
+            token = self.platform_form_token(page)
+            self.assertIn("Create organization and send invitation", page.text)
+            created = self.client.post(url + "/create", data={"form_token": token})
+            self.assertIn("Awaiting activation", created.text)
+            self.assertIn("Resend activation email", created.text)
+            self.assertEqual(1, len(sender.activation_messages))
+            duplicate = self.client.post(url + "/create", data={"form_token": token})
+            self.assertIn("cannot create an organization", duplicate.text)
+            self.assertEqual(1, len(sender.activation_messages))
+            old_invitation = asyncio.run(self.store.get_invitation("NCSSAR", "admin@ncssar.example"))
+            sent = self.client.post(url + "/send-invitation", data={"form_token": token})
+            self.assertIn("Activation invitation sent", sent.text)
+            new_invitation = asyncio.run(self.store.get_invitation("NCSSAR", "admin@ncssar.example"))
+            self.assertNotEqual(old_invitation.activation_nonce, new_invitation.activation_nonce)
+            self.assertEqual(2, len(sender.activation_messages))
+            asyncio.run(self.store.activate_owner("NCSSAR", "admin@ncssar.example", "correct horse battery staple"))
+            sent = self.client.post(url + "/send-invitation", data={"form_token": token})
+            self.assertIn("Activated", sent.text)
+            self.assertEqual(1, len(sender.access_messages))
+            self.assertEqual(2, len(sender.activation_messages))
+            self.assertEqual(1, len(asyncio.run(self.store.list_organizations())))
+
+    def test_request_email_failure_keeps_retryable_organization(self):
+        request = self.create_pilot_request()
+        sender = FakeOrganizationEmailSender()
+        sender.send_organization_activation = Mock(side_effect=main.PlatformAdminAuthError("Email temporarily unavailable"))
+        with patch.object(main, "CONTROL_PLANE_SIMULATION", False), patch.object(main, "platform_admin_email_sender", sender):
+            page = self.client.get("/platform-admin/organizations")
+            token = self.platform_form_token(page)
+            url = f"/platform-admin/managed-requests/{request.id}"
+            failed = self.client.post(url + "/create", data={"form_token": token})
+            self.assertIn("Email temporarily unavailable", failed.text)
+            self.assertIn("Resend activation email", failed.text)
+            self.assertEqual(1, len(asyncio.run(self.store.list_organizations())))
+            sender.send_organization_activation = Mock()
+            retried = self.client.post(url + "/send-invitation", data={"form_token": token})
+            self.assertIn("Activation invitation sent", retried.text)
+            sender.send_organization_activation.assert_called_once()
+
+    def test_request_cannot_email_mismatched_or_archived_organization(self):
+        request = self.create_pilot_request()
+        other = self.create_pilot_request(requester_email="different@example.test")
+        organization = asyncio.run(self.store.create_organization(
+            legal_name="North County SAR", designator="NCSSAR", admin_name="Administrator",
+            admin_email="admin@ncssar.example", postal_address="", actor_id="platform-admin", simulation=False,
+        ))
+        sender = FakeOrganizationEmailSender()
+        with patch.object(main, "CONTROL_PLANE_SIMULATION", False), patch.object(main, "platform_admin_email_sender", sender):
+            token = self.platform_form_token(self.client.get("/platform-admin/organizations"))
+            blocked = self.client.post(f"/platform-admin/managed-requests/{other.id}/send-invitation", data={"form_token": token})
+            self.assertIn("no active organization invitation", blocked.text)
+            asyncio.run(self.store.archive_organization(
+                designator="NCSSAR", actor_id="platform-admin", administrator_contact="Test administrator confirmed",
+            ))
+            blocked = self.client.post(f"/platform-admin/managed-requests/{request.id}/send-invitation", data={"form_token": token})
+            self.assertIn("Organization archived", blocked.text)
+            self.assertIn("no active organization invitation", blocked.text)
+            self.assertEqual([], sender.activation_messages)
+            self.assertEqual([], sender.access_messages)
+
+    def test_request_resends_activation_for_replacement_owner_before_email_succeeds(self):
+        request = self.create_pilot_request()
+        organization = asyncio.run(self.store.create_organization(
+            legal_name="North County SAR", designator="NCSSAR", admin_name="Administrator",
+            admin_email="admin@ncssar.example", postal_address="", actor_id="platform-admin", simulation=False,
+        ))
+        asyncio.run(self.store.activate_owner("NCSSAR", "admin@ncssar.example", "correct horse battery staple"))
+        asyncio.run(self.store.update_organization_administrator(
+            designator="NCSSAR", legal_name=organization.legal_name,
+            admin_name="Replacement", admin_email="replacement@example.test", admin_phone="",
+            postal_address="", actor_id="platform-admin",
+        ))
+        sender = FakeOrganizationEmailSender()
+        with patch.object(main, "CONTROL_PLANE_SIMULATION", False), patch.object(main, "platform_admin_email_sender", sender):
+            token = self.platform_form_token(self.client.get("/platform-admin/organizations"))
+            response = self.client.post(f"/platform-admin/managed-requests/{request.id}/send-invitation", data={"form_token": token})
+            self.assertIn("Activation invitation sent", response.text)
+            self.assertEqual("replacement@example.test", sender.activation_messages[0]["recipient"])
+            self.assertEqual([], sender.access_messages)
+
+    def test_request_follow_up_requires_platform_auth_csrf_and_valid_state(self):
+        request = self.create_pilot_request()
+        url = f"/platform-admin/managed-requests/{request.id}"
+        outsider = TestClient(main.app)
+        try:
+            for action in ("create", "send-invitation", "close", "decline", "reopen"):
+                denied = outsider.post(url + "/" + action, data={"form_token": "invalid"}, follow_redirects=False)
+                self.assertIn(denied.status_code, (303, 401, 403))
+        finally:
+            outsider.close()
+        page = self.client.get("/platform-admin/organizations")
+        token = self.platform_form_token(page)
+        for action in ("create", "send-invitation", "close", "decline", "reopen"):
+            denied = self.client.post(url + "/" + action, data={"form_token": "invalid", "note": "test"})
+            self.assertEqual(403, denied.status_code)
+        missing_note = self.client.post(url + "/close", data={"form_token": token})
+        self.assertIn("Enter a follow-up note", missing_note.text)
+        closed = self.client.post(url + "/close", data={"form_token": token, "note": "Duplicate request"})
+        self.assertIn("Duplicate request", closed.text)
+        self.assertIn("Reopen request", closed.text)
+        self.assertIn("cannot create an organization", self.client.post(url + "/create", data={"form_token": token}).text)
+        self.assertIn("no active organization invitation", self.client.post(url + "/send-invitation", data={"form_token": token}).text)
+        reopened = self.client.post(url + "/reopen", data={"form_token": token, "note": "Follow-up resumed"})
+        self.assertIn("Create simulation organization", reopened.text)
+        self.assertEqual(0, len(asyncio.run(self.store.list_organizations())))
+
     def test_platform_admin_can_replace_organization_administrator_with_accountability_email(self):
         organization = asyncio.run(
             self.store.create_organization(
