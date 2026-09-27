@@ -1,4 +1,4 @@
-v1.4.94:
+v1.4.94: deployed
 * Resolve managed pilot requests from platform administration: create an organization and send its invitation, resend activation or access emails, and close, decline, or reopen requests with an audited follow-up note.
 * Show linked organization activation status for existing requests, including requests submitted after activation. Match both the requested designator and administrator email, and preserve request links when administrators change.
 
