@@ -1,3 +1,7 @@
+v1.4.95:
+* Let iPad users reuse an earlier tablet identity after Tracker sign-in, matching the Android workflow. Preserve organization, member, model, and platform checks; restore the selected device name and retained history only after the user chooses the earlier tablet.
+* Update the HTTP dependency to address newly reported security vulnerabilities.
+
 v1.4.94: deployed
 * Resolve managed pilot requests from platform administration: create an organization and send its invitation, resend activation or access emails, and close, decline, or reopen requests with an audited follow-up note.
 * Show linked organization activation status for existing requests, including requests submitted after activation. Match both the requested designator and administrator email, and preserve request links when administrators change.

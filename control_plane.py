@@ -7032,7 +7032,7 @@ class ControlPlaneStore:
                 credential is None
                 or credential.organization_id != organization_id
                 or credential.state != "active"
-                or credential.platform != "android"
+                or credential.platform not in {"android", "ios"}
                 or credential.authorized_user_id is None
                 or not credential.device_model
             ):
@@ -7139,7 +7139,7 @@ class ControlPlaneStore:
             if (
                 current is None
                 or current.state != "active"
-                or current.platform != "android"
+                or current.platform not in {"android", "ios"}
                 or current.authorized_user_id is None
             ):
                 raise ControlPlaneError("Active organization device not found.")

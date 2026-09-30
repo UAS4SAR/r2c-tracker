@@ -4128,6 +4128,12 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertIsNotNone(restored)
 
     def test_authenticated_android_can_find_and_replace_prior_authorization(self):
+        self._assert_authorization_replacement("android", "Samsung SM-X930")
+
+    def test_authenticated_ios_can_find_and_replace_prior_authorization(self):
+        self._assert_authorization_replacement("ios", "iPad13,4")
+
+    def _assert_authorization_replacement(self, platform, device_model):
         organization = asyncio.run(
             self.store.create_organization(
                 legal_name="North County Search and Rescue",
@@ -4155,8 +4161,8 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             campaign_id=campaign.id,
             organization_id=organization.id,
             device_name="S11U",
-            device_model="Samsung SM-X930",
-            platform="android",
+            device_model=device_model,
+            platform=platform,
             installation_id="11111111-2222-3333-4444-555555555555",
             functionality_release=148,
             authorized_user_id=owner.id,
@@ -4165,8 +4171,8 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             campaign_id=campaign.id,
             organization_id=organization.id,
             device_name="S11U",
-            device_model="Samsung SM-X930",
-            platform="android",
+            device_model=device_model,
+            platform=platform,
             installation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             functionality_release=148,
             authorized_user_id=owner.id,
@@ -4181,6 +4187,7 @@ class OrganizationRouteFlowTest(unittest.TestCase):
             headers=headers,
         )
         self.assertEqual(200, candidates.status_code)
+        self.assertIn(platform, candidates.json()["supported_platforms"])
         self.assertEqual(
             [previous.id],
             [item["credential_id"] for item in candidates.json()["candidates"]],

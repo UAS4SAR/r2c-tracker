@@ -1950,6 +1950,12 @@ class ControlPlaneStoreTest(unittest.TestCase):
         self.assertIsNotNone(unproven.reauth_requested_at)
 
     def test_active_device_can_replace_same_member_model_authorization(self):
+        self._assert_device_replacement("android", "Samsung SM-X930")
+
+    def test_ios_device_can_replace_same_member_model_authorization(self):
+        self._assert_device_replacement("ios", "iPad13,4")
+
+    def _assert_device_replacement(self, platform, device_model):
         organization = self.create_organization()
         owner = asyncio.run(self.store.activate_owner(
             organization.designator,
@@ -1962,15 +1968,15 @@ class ControlPlaneStoreTest(unittest.TestCase):
             label="Replacement tablet confirmation",
             created_by_user_id=owner.id,
             expires_in_hours=24,
-            max_redemptions=2,
+            max_redemptions=3,
             now=self.now,
         ))
         previous = asyncio.run(self.store.issue_device_credential(
             campaign_id=campaign.id,
             organization_id=organization.id,
             device_name="S11U",
-            device_model="Samsung SM-X930",
-            platform="android",
+            device_model=device_model,
+            platform=platform,
             installation_id="11111111-2222-3333-4444-555555555555",
             authorized_user_id=owner.id,
             now=self.now,
@@ -1985,12 +1991,22 @@ class ControlPlaneStoreTest(unittest.TestCase):
             recorded_at=self.now,
             now=self.now,
         ))
+        other_platform = asyncio.run(self.store.issue_device_credential(
+            campaign_id=campaign.id,
+            organization_id=organization.id,
+            device_name="Other platform",
+            device_model=device_model,
+            platform="ios" if platform == "android" else "android",
+            installation_id="cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee",
+            authorized_user_id=owner.id,
+            now=self.now + timedelta(milliseconds=500),
+        ))
         replacement = asyncio.run(self.store.issue_device_credential(
             campaign_id=campaign.id,
             organization_id=organization.id,
             device_name="S11U",
-            device_model="Samsung SM-X930",
-            platform="android",
+            device_model=device_model,
+            platform=platform,
             installation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             now=self.now + timedelta(seconds=1),
         ))
@@ -2001,13 +2017,19 @@ class ControlPlaneStoreTest(unittest.TestCase):
             user_id=owner.id,
             now=self.now + timedelta(seconds=2),
         ))
-        self.assertEqual(f"{previous.device_name}-2", completed.device_name)
+        self.assertEqual(f"{previous.device_name}-3", completed.device_name)
         candidates = asyncio.run(self.store.list_device_replacement_candidates(
             credential_id=replacement.id,
             organization_id=organization.id,
         ))
         self.assertEqual([previous.id], [candidate.id for candidate in candidates])
 
+        with self.assertRaises(ControlPlaneError):
+            asyncio.run(self.store.replace_device_authorization(
+                current_credential_id=replacement.id,
+                replacement_credential_id=other_platform.id,
+                now=self.now + timedelta(seconds=3),
+            ))
         completed = asyncio.run(self.store.replace_device_authorization(
             current_credential_id=replacement.id,
             replacement_credential_id=previous.id,

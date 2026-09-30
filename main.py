@@ -11855,6 +11855,7 @@ async def device_authorization_replacement_candidates(
     return JSONResponse(
         {
             "schema_version": 1,
+            "supported_platforms": ["android", "ios"],
             "device_model": next(
                 (candidate.device_model for candidate in candidates), ""
             ),
