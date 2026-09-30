@@ -1,4 +1,4 @@
-v1.4.95:
+v1.4.95: deployed
 * Let iPad users reuse an earlier tablet identity after Tracker sign-in, matching the Android workflow. Preserve organization, member, model, and platform checks; restore the selected device name and retained history only after the user chooses the earlier tablet.
 * Update the HTTP dependency to address newly reported security vulnerabilities.
 
