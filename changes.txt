@@ -1,4 +1,4 @@
-v1.4.96:
+v1.4.96: deployed
 * Update the HTTP dependency to address a newly reported security vulnerability.
 * Let authorized devices choose a recognizable name. Preserve the chosen name across reconnects and device replacement, reject duplicate organization names, and update live stream labels.
 
