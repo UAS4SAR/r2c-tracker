@@ -442,6 +442,17 @@ class ControlPlaneStoreTest(unittest.TestCase):
         self.assertEqual("Primary's iPad Pro", first.device_name)
         self.assertEqual("Primary's iPad Pro-2", second.device_name)
 
+        self.assertEqual("Ken's MacBook Air", asyncio.run(self.store.name_device(
+            credential_id=second.id, device_name="  Ken's   MacBook Air  ")))
+        self.assertEqual("Ken's MacBook Air", asyncio.run(self.store.assign_operational_device_name(
+            credential_id=second.id, device_model="Mac")))
+        with self.assertRaises(ControlPlaneError):
+            asyncio.run(self.store.name_device(credential_id=first.id, device_name="ken's macbook air"))
+        for invalid in (" ", "x" * 161, "Mac\nBook"):
+            with self.assertRaises(ControlPlaneError):
+                asyncio.run(self.store.name_device(credential_id=second.id, device_name=invalid))
+
+
     def test_external_webhook_delivery_claims_retry_and_deduplicates(self):
         values = {
             "provider": "app_store_connect",

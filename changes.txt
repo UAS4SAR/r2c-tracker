@@ -1,3 +1,7 @@
+v1.4.96:
+* Update the HTTP dependency to address a newly reported security vulnerability.
+* Let authorized devices choose a recognizable name. Preserve the chosen name across reconnects and device replacement, reject duplicate organization names, and update live stream labels.
+
 v1.4.95: deployed
 * Let iPad users reuse an earlier tablet identity after Tracker sign-in, matching the Android workflow. Preserve organization, member, model, and platform checks; restore the selected device name and retained history only after the user chooses the earlier tablet.
 * Update the HTTP dependency to address newly reported security vulnerabilities.

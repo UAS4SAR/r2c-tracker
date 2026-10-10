@@ -872,6 +872,7 @@ class DeviceCredential(Base):
         ForeignKey("enrollment_campaigns.id"), index=True
     )
     device_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    custom_device_name: Mapped[str] = mapped_column(String(160), default="", nullable=False)
     device_model: Mapped[str] = mapped_column(String(160), default="", nullable=False)
     platform: Mapped[str] = mapped_column(String(24), nullable=False)
     installation_id: Mapped[str] = mapped_column(
@@ -2025,6 +2026,11 @@ class ControlPlaneStore:
                     )
                 }
             )
+            if "custom_device_name" not in device_credential_columns:
+                await connection.execute(text(
+                    "ALTER TABLE device_credentials "
+                    "ADD COLUMN custom_device_name VARCHAR(160) DEFAULT '' NOT NULL"
+                ))
             if "authorized_user_id" not in device_credential_columns:
                 await connection.execute(text(
                     "ALTER TABLE device_credentials "
@@ -7165,6 +7171,7 @@ class ControlPlaneStore:
             replacement.state = "superseded"
             replacement.reauth_requested_at = None
             current.device_name = replacement.device_name
+            current.custom_device_name = replacement.custom_device_name
             await session.execute(
                 update(ActiveVideoStream)
                 .where(
@@ -7202,6 +7209,37 @@ class ControlPlaneStore:
             ))
             await session.commit()
             return self._device_credential_admin_record(current, replaced_at)
+
+    async def name_device(self, *, credential_id: str, device_name: str) -> str:
+        clean = " ".join(device_name.strip().split())
+        if not clean or len(clean) > 160 or any(ord(c) < 32 for c in device_name):
+            raise ControlPlaneError("Choose a device name between 1 and 160 characters.")
+        async with self.sessions() as session:
+            credential = await session.get(DeviceCredential, credential_id)
+            if credential is None or credential.state != "active" or credential.authorized_user_id is None:
+                raise ControlPlaneError("An authorized active device is required.")
+            user = await session.get(OrganizationUser, credential.authorized_user_id)
+            if user is None or user.state != "active" or user.organization_id != credential.organization_id or "r2c_device" not in user.roles:
+                raise ControlPlaneError("An authorized active member is required.")
+            await session.scalar(select(Organization).where(
+                Organization.id == credential.organization_id).with_for_update())
+            duplicate = await session.scalar(select(DeviceCredential.id).where(
+                DeviceCredential.organization_id == credential.organization_id,
+                DeviceCredential.id != credential.id,
+                DeviceCredential.state.in_(("active", "reauth_required")),
+                func.lower(DeviceCredential.device_name) == clean.lower()))
+            if duplicate:
+                raise ControlPlaneError("That device name is already in use. Choose another name.")
+            credential.custom_device_name = clean
+            credential.device_name = clean
+            await session.execute(update(ActiveVideoStream).where(
+                ActiveVideoStream.device_credential_id == credential.id).values(device_name=clean))
+            session.add(ControlPlaneAuditEvent(
+                organization_id=credential.organization_id, actor_type="organization_device",
+                actor_id=credential.id, event_type="device.name_changed",
+                details_json=json.dumps({"device_name": clean})))
+            await session.commit()
+            return clean
 
     async def assign_operational_device_name(
         self,
@@ -7256,7 +7294,7 @@ class ControlPlaneStore:
             if "r2c_device" in member.roles
         )
         owner = operational_member_name(user.display_name, operator_names)
-        base = f"{possessive_name(owner)} {device_model}"[:160].strip()
+        base = credential.custom_device_name or f"{possessive_name(owner)} {device_model}"[:160].strip()
         other_names = {
             value.casefold()
             for value in (await session.scalars(

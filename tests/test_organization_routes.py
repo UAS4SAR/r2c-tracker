@@ -4207,6 +4207,22 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertIsNotNone(active)
         self.assertEqual(previous.device_name, active.device_name)
 
+        named = self.client.post("/api/v1/device-authorization/name", headers=headers,
+                                 json={"device_name": "  Ken's MacBook Air  "})
+        self.assertEqual(200, named.status_code)
+        self.assertEqual("Ken's MacBook Air", named.json()["canonical_device_name"])
+        self.assertEqual("private, no-store", named.headers["cache-control"])
+        self.assertEqual("Ken's MacBook Air", asyncio.run(self.store.assign_operational_device_name(
+            credential_id=current.id, device_model=device_model)))
+        active = asyncio.run(self.store.authenticate_device_token(current.token))
+        self.assertEqual("Ken's MacBook Air", active.device_name)
+        invalid = self.client.post("/api/v1/device-authorization/name", headers=headers,
+                                   json={"device_name": "Mac\nBook"})
+        self.assertEqual(409, invalid.status_code)
+        unauthorized = self.client.post("/api/v1/device-authorization/name",
+                                        json={"device_name": "Not authorized"})
+        self.assertNotEqual(200, unauthorized.status_code)
+
     def test_device_reauthentication_recovers_when_google_start_loses_next_query(self):
         organization = asyncio.run(
             self.store.create_organization(

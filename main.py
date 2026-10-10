@@ -279,6 +279,10 @@ class DeviceEnrollmentRedeemRequest(BaseModel):
     functionality_release: int = Field(default=0, ge=0, le=1_000_000)
 
 
+class DeviceAuthorizationNameRequest(BaseModel):
+    device_name: str = Field(min_length=1, max_length=160)
+
+
 class DeviceAuthorizationReplacementRequest(BaseModel):
     replacement_credential_id: str = Field(min_length=36, max_length=36)
 
@@ -11871,6 +11875,21 @@ async def device_authorization_replacement_candidates(
         },
         headers={"Cache-Control": "private, no-store"},
     )
+
+
+@app.post("/api/v1/device-authorization/name")
+async def name_device_authorization(
+        payload: DeviceAuthorizationNameRequest,
+        credential: Optional[DeviceCredentialRecord] = Depends(get_api_key)):
+    if credential is None:
+        raise HTTPException(status_code=403, detail="Active device credential required.")
+    try:
+        name = await control_plane_store.name_device(
+            credential_id=credential.id, device_name=payload.device_name)
+    except ControlPlaneError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse({"canonical_device_name": name},
+                        headers={"Cache-Control": "private, no-store"})
 
 
 @app.post("/api/v1/device-authorization/replace")
