@@ -1,4 +1,4 @@
-v1.4.98:
+v1.4.98: deployed
 * Update locked dependencies to clear the release-gate dependency audit: aiohttp 3.14.5, certifi 2026.10.23, dnspython 2.9.2, pyasn1 0.6.5, and yarl 1.25.1 required by aiohttp.
 
 v1.4.97:
