@@ -413,7 +413,11 @@
         <h3>Proposed by {{ config_proposal.source_device_name }}</h3>
         <p>
           Organization CalTopo credentials: <strong>{{ config_proposal.diff.organizationCaltopo }}</strong><br>
-          Mutual-aid CalTopo credentials: <strong>{{ config_proposal.diff.mutualAidCaltopo }}</strong>
+          Mutual-aid CalTopo credentials: <strong>{{ config_proposal.diff.mutualAidCaltopo }}</strong><br>
+          {% if config_proposal.diff.droneOwnership is defined %}
+          Drone Ownership: <strong>{{ config_proposal.diff.droneOwnership.before }}</strong>
+          {% if config_proposal.diff.droneOwnership.changed %}→ <strong>{{ config_proposal.diff.droneOwnership.after }}</strong>{% else %}(unchanged){% endif %}
+          {% endif %}
         </p>
         <h3>Added drones</h3>
         <ul>{% for drone in config_proposal.diff.addedDrones %}<li>{{ drone.remoteId }}{% if drone.mappedId %} → {{ drone.mappedId }}{% endif %} · {{ drone.model }}{{ aircraft_fields(drone) }}</li>{% else %}<li>None</li>{% endfor %}</ul>
@@ -445,6 +449,7 @@
       {% if not config_releases %}
       <p>No configuration has been approved. Connected apps will not receive configuration updates.</p>
       {% else %}
+      {% set current_release = config_releases|selectattr('version_ms', 'equalto', current_config_version_ms)|first %}
       <div style="overflow-x:auto">
         <table class="org-table">
           <thead><tr><th>Approved</th><th>Source</th><th>Release notes</th><th>Status</th></tr></thead>

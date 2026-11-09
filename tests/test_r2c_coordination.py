@@ -24,6 +24,7 @@ def load_coordination_classes():
         info=lambda *args, **kwargs: None,
         debug=lambda *args, **kwargs: None,
         warning=lambda *args, **kwargs: None,
+        exception=lambda *args, **kwargs: None,
     )
 
     async def _broadcast(*args, **kwargs):
@@ -186,6 +187,11 @@ class TestHub(BaseHub):
         stored = dict(event)
         stored["confirmedAtMs"] = confirmed_at_ms
         self.confirmation_store[(map_id, event["remoteId"])] = stored
+
+    async def _persist_claim_state(self, organization_id, map_id, event, confirmed_at_ms, owner):
+        await self._upsert_confirmation_state(organization_id, map_id, event, confirmed_at_ms)
+        await self._upsert_owner_state(organization_id, map_id, event["remoteId"], owner)
+        return True
 
     async def _delete_confirmation_state(self, organization_id, map_id, remote_id):
         self.confirmation_store.pop((map_id, remote_id), None)
@@ -700,6 +706,64 @@ class R2CCoordinationHubTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("RID-SAVE-OWNER", assigned[0]["remoteId"])
             self.assertEqual("zone-bravo", assigned[0]["ownerGuid"])
             self.assertEqual("zone-bravo", assigned[0]["ownerZoneId"])
+
+    async def test_claim_transfer_requires_current_owner_acknowledgement(self):
+        first = {"type": "drone_confirmed", "remoteId": "RID-CLAIM", "ownerName": "1SAR7"}
+        await self.hub.handle_message(self.ws_alpha, first)
+        prior = self.hub._confirmed_drones_by_map["MAP1"]["RID-CLAIM"]
+        self.ws_bravo.sent_texts.clear()
+        await self.hub.handle_message(self.ws_bravo, {**first, "ownerName": "1SAR8"})
+        conflict = next(json.loads(text) for text in self.ws_bravo.sent_texts
+                        if json.loads(text).get("type") == "drone_claim_conflict")
+        self.assertEqual("1SAR7", conflict["claim"]["ownerName"])
+        self.assertEqual("zone-alpha", self.hub._owners[("MAP1", "RID-CLAIM")]["owner_guid"])
+        await self.hub.handle_message(self.ws_bravo, {**first, "ownerName": "1SAR8",
+            "replaceConfirmedBy": "zone-alpha", "replaceConfirmedAtMs": prior["confirmedAtMs"]})
+        self.assertEqual("zone-bravo", self.hub._owners[("MAP1", "RID-CLAIM")]["owner_guid"])
+        self.ws_alpha.sent_texts.clear()
+        await self.hub.handle_message(self.ws_alpha, {**first, "replaceConfirmedBy": "zone-alpha",
+            "replaceConfirmedAtMs": prior["confirmedAtMs"]})
+        self.assertTrue(any(json.loads(text).get("type") == "drone_claim_conflict" for text in self.ws_alpha.sent_texts))
+        self.assertEqual("zone-bravo", self.hub._owners[("MAP1", "RID-CLAIM")]["owner_guid"])
+
+    async def test_simultaneous_first_claims_require_one_claimant_to_review(self):
+        await asyncio.gather(
+            self.hub.handle_message(self.ws_alpha, {
+                "type": "drone_confirmed", "remoteId": "RID-RACE", "ownerName": "1SAR7"}),
+            self.hub.handle_message(self.ws_bravo, {
+                "type": "drone_confirmed", "remoteId": "RID-RACE", "ownerName": "1SAR8"}),
+        )
+        owner = self.hub._owners[("MAP1", "RID-RACE")]["owner_guid"]
+        loser = self.ws_bravo if owner == "zone-alpha" else self.ws_alpha
+        conflicts = [json.loads(text) for text in loser.sent_texts
+                     if json.loads(text).get("type") == "drone_claim_conflict"]
+        self.assertEqual(1, len(conflicts))
+        self.assertEqual(owner, conflicts[0]["claim"]["confirmedByGuid"])
+
+    async def test_new_connection_waits_for_state_recovery(self):
+        hub = TestHub()
+        recovery_ready = asyncio.Event()
+        hub._load_task = asyncio.create_task(recovery_ready.wait())
+        socket = FakeWebSocket()
+        connection = asyncio.create_task(hub.connect(socket))
+        await asyncio.sleep(0)
+        self.assertFalse(socket.accepted)
+        recovery_ready.set()
+        await connection
+        self.assertTrue(socket.accepted)
+
+    async def test_failed_claim_persistence_does_not_grant_ownership(self):
+        async def fail(*_args, **_kwargs):
+            raise RuntimeError("database offline")
+        self.hub._persist_claim_state = fail
+        self.ws_alpha.sent_texts.clear()
+        await self.hub.handle_message(self.ws_alpha, {
+            "type": "drone_confirmed", "remoteId": "RID-FAIL", "ownerName": "1SAR7"})
+        self.assertNotIn(("MAP1", "RID-FAIL"), self.hub._owners)
+        self.assertTrue(any(json.loads(text).get("type") == "drone_claim_unavailable"
+                            for text in self.ws_alpha.sent_texts))
+        self.assertFalse(any(json.loads(text).get("type") == "drone_confirmed"
+                             for text in self.ws_alpha.sent_texts))
 
     async def test_drone_confirmed_overrides_first_sighting_owner(self):
         await self.hub.handle_message(self.ws_alpha, {

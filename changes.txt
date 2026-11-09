@@ -1,3 +1,7 @@
+v1.4.97:
+* Save aircraft ownership claims and their owner leases together. If that write fails, the claim is not granted. A replacement must name the current claim, and an older lease cannot overwrite a newer one.
+* Accept optional Drone Ownership on the existing organization configuration snapshot. Keep the published value when an older app omits it, reject an unknown mode, and show the change in the administrator review before approval. There is no separate immediate-save control.
+
 v1.4.96: deployed
 * Update the HTTP dependency to address a newly reported security vulnerability.
 * Let authorized devices choose a recognizable name. Preserve the chosen name across reconnects and device replacement, reject duplicate organization names, and update live stream labels.

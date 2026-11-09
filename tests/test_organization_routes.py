@@ -801,6 +801,98 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         async with self.flight_engine.begin() as connection:
             await connection.run_sync(main.Base.metadata.create_all)
 
+    def test_coordination_restart_restores_unexpired_claim(self):
+        async def exercise():
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            async with self.flight_sessions() as session:
+                session.add_all([
+                    main.R2CZoneState(organization_id="org1", map_id="MAP1", zone_id="zone-alpha",
+                        guid="zone-alpha", name="Mike's iPad", online=True, last_seen_ms=now_ms),
+                    main.R2CDroneOwnerState(organization_id="org1", map_id="MAP1", remote_id="RID1",
+                        owner_guid="zone-alpha", owner_zone_id="zone-alpha", first_drone_ts=1,
+                        first_distance_m=1, mapped_id="DRONE", lease_seq=3, lease_expire_ms=now_ms + 30_000),
+                    main.R2CDroneConfirmationState(organization_id="org1", map_id="MAP1", remote_id="RID1",
+                        zone_id="zone-alpha", guid="zone-alpha", confirmed_by_guid="zone-alpha",
+                        owner_name="1SAR7", mapped_id="DRONE", confirmed_at_ms=now_ms),
+                ])
+                await session.commit()
+            hub = main.R2CCoordinationHub()
+            with patch.object(main, "AsyncSessionLocal", self.flight_sessions):
+                await hub._load_state()
+                replayed = await hub._load_recent_confirmation_events("org1", "MAP1", now_ms)
+            claim = hub._confirmed_drones_by_map[("org1", "MAP1")]["RID1"]
+            self.assertEqual("1SAR7", claim["ownerName"])
+            self.assertEqual("Mike's iPad", claim["confirmedByDeviceName"])
+            self.assertEqual(3, claim["leaseSeq"])
+            self.assertEqual("Mike's iPad", replayed[0]["confirmedByDeviceName"])
+            self.assertEqual(3, replayed[0]["leaseSeq"])
+            socket = Mock()
+            socket.send_text = AsyncMock()
+            conn = main.R2CZoneConnection(socket, organization_id="org1")
+            conn.map_id, conn.zone_id, conn.guid, conn.name = "MAP1", "zone-bravo", "zone-bravo", "Other device"
+            hub._connections[socket] = conn
+            await hub._handle_drone_confirmed(socket, {"remoteId": "RID1", "ownerName": "1SAR8"})
+            conflict = json.loads(socket.send_text.await_args_list[0].args[0])
+            self.assertEqual("drone_claim_conflict", conflict["type"])
+            self.assertEqual("Mike's iPad", conflict["claim"]["confirmedByDeviceName"])
+        asyncio.run(exercise())
+
+    def test_delayed_claim_write_cannot_overwrite_newer_claim(self):
+        async def exercise():
+            hub = main.R2CCoordinationHub()
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            old = {"remoteId": "RID1", "guid": "zone-a", "confirmedByGuid": "zone-a",
+                   "zoneId": "zone-a", "ownerName": "1SAR7"}
+            new = {**old, "guid": "zone-b", "confirmedByGuid": "zone-b", "zoneId": "zone-b", "ownerName": "1SAR8"}
+            old_owner = {"owner_guid": "zone-a", "owner_zone_id": "zone-a", "lease_seq": 1,
+                         "lease_expire_ms": now_ms + 30_000}
+            new_owner = {"owner_guid": "zone-b", "owner_zone_id": "zone-b", "lease_seq": 2,
+                         "lease_expire_ms": now_ms + 30_000}
+            with patch.object(main, "AsyncSessionLocal", self.flight_sessions):
+                await hub._upsert_confirmation_state("org1", "MAP1", new, now_ms + 1)
+                await hub._upsert_owner_state("org1", "MAP1", "RID1", new_owner)
+                await hub._upsert_confirmation_state("org1", "MAP1", old, now_ms)
+                await hub._upsert_owner_state("org1", "MAP1", "RID1", old_owner)
+                async with self.flight_sessions() as session:
+                    confirmation = await session.scalar(select(main.R2CDroneConfirmationState))
+                    owner = await session.scalar(select(main.R2CDroneOwnerState))
+                    self.assertEqual("1SAR8", confirmation.owner_name)
+                    self.assertEqual("zone-b", owner.owner_guid)
+        asyncio.run(exercise())
+
+    def test_claim_and_owner_roll_back_together_if_write_fails(self):
+        async def exercise():
+            hub = main.R2CCoordinationHub()
+            event = {"remoteId": "RID1", "ownerName": "1SAR7", "confirmedByGuid": "zone-a"}
+            owner = {"owner_guid": "zone-a", "owner_zone_id": "zone-a", "lease_seq": 1,
+                     "lease_expire_ms": int(datetime.now(UTC).timestamp() * 1000) + 30_000}
+            with patch.object(main, "AsyncSessionLocal", self.flight_sessions), \
+                 patch.object(hub, "_write_confirmation_state", AsyncMock(side_effect=RuntimeError("write failed"))):
+                with self.assertRaisesRegex(RuntimeError, "write failed"):
+                    await hub._persist_claim_state("org1", "MAP1", event, 1, owner)
+            async with self.flight_sessions() as session:
+                self.assertIsNone(await session.scalar(select(main.R2CDroneOwnerState)))
+                self.assertIsNone(await session.scalar(select(main.R2CDroneConfirmationState)))
+        asyncio.run(exercise())
+
+    def test_concurrent_claim_saves_keep_one_newest_owner(self):
+        async def exercise():
+            hub = main.R2CCoordinationHub()
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            old = {"remoteId": "RID1", "zoneId": "zone-a", "guid": "zone-a", "confirmedByGuid": "zone-a", "ownerName": "1SAR7"}
+            new = {"remoteId": "RID1", "zoneId": "zone-b", "guid": "zone-b", "confirmedByGuid": "zone-b", "ownerName": "1SAR8"}
+            old_owner = {"owner_guid": "zone-a", "owner_zone_id": "zone-a", "lease_seq": 1, "lease_expire_ms": now_ms + 30_000}
+            new_owner = {"owner_guid": "zone-b", "owner_zone_id": "zone-b", "lease_seq": 2, "lease_expire_ms": now_ms + 30_000}
+            with patch.object(main, "AsyncSessionLocal", self.flight_sessions):
+                await asyncio.gather(hub._persist_claim_state("org1", "MAP1", old, now_ms, old_owner),
+                                     hub._persist_claim_state("org1", "MAP1", new, now_ms + 1, new_owner))
+            async with self.flight_sessions() as session:
+                owners = (await session.scalars(select(main.R2CDroneOwnerState))).all()
+                claims = (await session.scalars(select(main.R2CDroneConfirmationState))).all()
+                self.assertEqual(["zone-b"], [row.owner_guid for row in owners])
+                self.assertEqual(["1SAR8"], [row.owner_name for row in claims])
+        asyncio.run(exercise())
+
     async def add_flight(self, organization_id, sar_id):
         async with self.flight_sessions() as session:
             flight = main.Flight(
@@ -976,6 +1068,7 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         self.assertEqual(approved.version_ms, current.json()["versionMs"])
         self.assertEqual(main.aircraft_readiness.with_aircraft_identities(normalized), current.json()["config"])
         self.assertEqual("private, no-store", current.headers["cache-control"])
+        self.assertNotIn("droneOwnership", current.json()["config"])
 
     def test_managed_config_snapshot_excludes_organization_policy_and_device_secrets(self):
         valid = {
@@ -994,6 +1087,27 @@ class OrganizationRouteFlowTest(unittest.TestCase):
         invalid = {**valid, "organizationCaltopoEnc": "r2c_dev_forbidden"}
         with self.assertRaises(ValueError):
             main.validated_organization_config_snapshot(invalid)
+
+    def test_drone_ownership_is_optional_on_the_existing_configuration_snapshot(self):
+        base = {
+            "configSchemaVersion": 1, "sourcePlatform": "android",
+            "sourceAppVersion": "2.5.10", "sourceAppBuild": 439,
+            "organizationCaltopoEnc": "opaque", "mutualAidCaltopoEnc": "",
+            "droneSpecs": [],
+        }
+        omitted, _ = main.validated_organization_config_snapshot(base)
+        self.assertNotIn("droneOwnership", omitted)
+        included, _ = main.validated_organization_config_snapshot({**base, "droneOwnership": "streaming_device"})
+        self.assertEqual("streaming_device", included["droneOwnership"])
+        with self.assertRaises(ValueError):
+            main.validated_organization_config_snapshot({**base, "droneOwnership": "everyone"})
+        unchanged = main.organization_config_diff(omitted, omitted)
+        self.assertEqual("all_detected", unchanged["droneOwnership"]["before"])
+        self.assertFalse(unchanged["droneOwnership"]["changed"])
+        changed = main.organization_config_diff(omitted, included)
+        self.assertEqual("all_detected", changed["droneOwnership"]["before"])
+        self.assertEqual("streaming_device", changed["droneOwnership"]["after"])
+        self.assertTrue(changed["droneOwnership"]["changed"])
 
     def test_config_admin_pulls_reviews_and_approves_connected_device_configuration(self):
         organization = asyncio.run(self.store.create_organization(

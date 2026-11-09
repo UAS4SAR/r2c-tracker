@@ -123,6 +123,11 @@ class TestHub(BaseHub):
     async def _upsert_confirmation_state(self, *args, **kwargs):
         return
 
+    async def _persist_claim_state(self, organization_id, map_id, event, confirmed_at_ms, owner):
+        await self._upsert_confirmation_state(organization_id, map_id, event, confirmed_at_ms)
+        await self._upsert_owner_state(organization_id, map_id, event["remoteId"], owner)
+        return True
+
     async def _delete_confirmation_state(self, *args, **kwargs):
         return
 

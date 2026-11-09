@@ -9,6 +9,27 @@ import main
 
 
 class CoordinationTenantSchemaMigrationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_claim_scope_stops_migration_without_deleting_records(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_engine = create_async_engine(f"sqlite+aiosqlite:///{Path(temp_dir) / 'duplicates.db'}")
+            original_engine = main.engine
+            main.engine = test_engine
+            try:
+                async with test_engine.begin() as connection:
+                    await connection.execute(text("CREATE TABLE r2c_zone_state (id INTEGER PRIMARY KEY, map_id TEXT, zone_id TEXT, guid TEXT, last_seen_ms INTEGER)"))
+                    await connection.execute(text("CREATE TABLE r2c_drone_owner_state (id INTEGER PRIMARY KEY, map_id TEXT, remote_id TEXT, lease_expire_ms INTEGER)"))
+                    await connection.execute(text("CREATE TABLE r2c_drone_confirmation_state (id INTEGER PRIMARY KEY, map_id TEXT, remote_id TEXT, confirmed_at_ms INTEGER)"))
+                    await connection.execute(text("CREATE TABLE r2c_recent_sighting (id INTEGER PRIMARY KEY, map_id TEXT, remote_id TEXT, received_ms INTEGER)"))
+                    await connection.execute(text("INSERT INTO r2c_drone_owner_state (map_id, remote_id, lease_expire_ms) VALUES ('MAP1', 'RID1', 1), ('MAP1', 'RID1', 2)"))
+                with self.assertRaisesRegex(RuntimeError, "duplicate scope"):
+                    await main.migrate_r2c_coordination_schema()
+                async with test_engine.connect() as connection:
+                    count = await connection.scalar(text("SELECT COUNT(*) FROM r2c_drone_owner_state"))
+                self.assertEqual(2, count)
+            finally:
+                main.engine = original_engine
+                await test_engine.dispose()
+
     async def test_existing_coordination_rows_migrate_to_legacy_organization(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = Path(temp_dir) / "coordination.db"

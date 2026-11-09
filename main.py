@@ -46,8 +46,9 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse, Red
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, MetaData, Table, delete, select, text
-from sqlalchemy import Column, Integer, BigInteger, String, Float, Boolean, DateTime, desc, func, or_, and_
+from sqlalchemy import create_engine, MetaData, Table, delete, select, text, update
+from sqlalchemy import Column, Integer, BigInteger, String, Float, Boolean, DateTime, Index, desc, func, or_, and_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import sessionmaker, Session
@@ -874,6 +875,7 @@ class R2CZoneState(Base):
 
 class R2CDroneOwnerState(Base):
     __tablename__ = "r2c_drone_owner_state"
+    __table_args__ = (Index("uq_r2c_drone_owner_state_scope", "organization_id", "map_id", "remote_id", unique=True),)
     id = Column(Integer, primary_key=True)
     organization_id = Column(
         String(36),
@@ -895,6 +897,7 @@ class R2CDroneOwnerState(Base):
 
 class R2CDroneConfirmationState(Base):
     __tablename__ = "r2c_drone_confirmation_state"
+    __table_args__ = (Index("uq_r2c_drone_confirmation_state_scope", "organization_id", "map_id", "remote_id", unique=True),)
     id = Column(Integer, primary_key=True)
     organization_id = Column(
         String(36),
@@ -1068,11 +1071,38 @@ async def migrate_r2c_coordination_schema():
             ("r2c_recent_sighting", "received_ms"),
             ("r2c_zone_state", "last_seen_ms"),
             ("r2c_drone_owner_state", "lease_expire_ms"),
+            ("r2c_drone_confirmation_state", "confirmed_at_ms"),
         ):
             await conn.execute(text(
                 f"CREATE INDEX IF NOT EXISTS idx_{table_name}_retention "
                 f"ON {table_name} ({age_column}, id)"
             ))
+        for statement, label in (
+            (
+                "SELECT organization_id, map_id, remote_id FROM r2c_drone_owner_state "
+                "GROUP BY organization_id, map_id, remote_id HAVING COUNT(*) > 1 LIMIT 1",
+                "r2c_drone_owner_state",
+            ),
+            (
+                "SELECT organization_id, map_id, remote_id FROM r2c_drone_confirmation_state "
+                "GROUP BY organization_id, map_id, remote_id HAVING COUNT(*) > 1 LIMIT 1",
+                "r2c_drone_confirmation_state",
+            ),
+        ):
+            duplicate = await conn.execute(text(statement))
+            if duplicate.first() is not None:
+                raise RuntimeError(
+                    "Cannot enable safe ownership claims: duplicate scope in "
+                    f"{label}; preserve and reconcile the records before starting the tracker."
+                )
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_r2c_drone_owner_state_scope "
+            "ON r2c_drone_owner_state (organization_id, map_id, remote_id)"
+        ))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_r2c_drone_confirmation_state_scope "
+            "ON r2c_drone_confirmation_state (organization_id, map_id, remote_id)"
+        ))
 
 
 async def migrate_flight_archive_schema():
@@ -2274,6 +2304,10 @@ class R2CCoordinationHub:
         websocket: WebSocket,
         device_credential: Optional[object] = None,
     ):
+        # Do not admit a new claimant until recovery has finished. Otherwise
+        # recovery can replace live in-memory owner state after a new claim.
+        if self._load_task is not None:
+            await asyncio.shield(self._load_task)
         await websocket.accept()
         now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
         organization_id = str(
@@ -2533,6 +2567,9 @@ class R2CCoordinationHub:
             )
             _snapshot = aircraft_readiness.preserve_legacy_aircraft_fields(
                 aircraft_readiness.with_aircraft_identities(current.snapshot) if current else {}, _snapshot)
+            if "droneOwnership" not in _snapshot and current is not None:
+                if "droneOwnership" in current.snapshot:
+                    _snapshot["droneOwnership"] = current.snapshot["droneOwnership"]
             _snapshot, snapshot_json = validated_organization_config_snapshot(_snapshot)
             diff = organization_config_diff(
                 current.snapshot if current is not None else None,
@@ -4073,37 +4110,103 @@ class R2CCoordinationHub:
             organization_id, map_id, zone_id, guid = self._message_context(websocket, payload)
             if not map_id or not remote_id:
                 return
-            self._confirmation_event_seq += 1
-            event = {
-                "type": "drone_confirmed",
-                "mapId": map_id,
-                "remoteId": remote_id,
-                "zoneId": zone_id,
-                "guid": guid,
-                "confirmedByGuid": guid,
-                "mappedId": payload.get("mappedId", "") or "",
-                "trackLabel": payload.get("trackLabel", "") or payload.get("mappedId", "") or "",
-                "org": payload.get("org", "") or "",
-                "model": payload.get("model", "") or "",
-                "ownerName": payload.get("ownerName", "") or "",
-                "confirmedAtMs": now_ms,
-                "confirmationEventId": self._confirmation_event_seq,
-            }
-            existing_owner = self._owners.get((organization_id, map_id, remote_id))
-            owner = {
-                "owner_guid": event.get("confirmedByGuid", "") or event.get("guid", ""),
-                "owner_zone_id": zone_id,
-                "drone_ts": int((existing_owner or {}).get("drone_ts", 0) or 0),
-                "distance_m": float((existing_owner or {}).get("distance_m", 0.0) or 0.0),
-                "mapped_id": event["mappedId"],
-                "lease_seq": int((existing_owner or {}).get("lease_seq", 0) or 0) + 1,
-                "lease_expire_ms": now_ms + (R2C_LEASE_SEC * 1000),
-                "source": "confirmation",
-            }
-            self._remember_drone_confirmation_locked(organization_id, map_id, event, now_ms)
-            self._owners[(organization_id, map_id, remote_id)] = owner
-        await self._upsert_confirmation_state(organization_id, map_id, event, now_ms)
-        await self._upsert_owner_state(organization_id, map_id, remote_id, owner)
+            self._prune_confirmed_drones_locked(now_ms)
+            current_claim = self._confirmed_drones_by_map.get(self._scope_key(organization_id, map_id), {}).get(remote_id)
+            previous_claim = dict(current_claim) if current_claim else None
+            previous_owner = self._owners.get((organization_id, map_id, remote_id))
+            previous_owner = dict(previous_owner) if previous_owner else None
+            if current_claim and current_claim.get("confirmedByGuid") != guid:
+                expected_guid = str(payload.get("replaceConfirmedBy", "") or "")
+                expected_at = self._parse_nonnegative_int(payload.get("replaceConfirmedAtMs"))
+                if (expected_guid != str(current_claim.get("confirmedByGuid", "")) or
+                        expected_at != int(current_claim.get("confirmedAtMs", 0) or 0)):
+                    conflict = dict(current_claim)
+                else:
+                    conflict = None
+            else:
+                conflict = None
+            if conflict is not None:
+                # The claimant must explicitly acknowledge the exact current claim.
+                # Send the authoritative claim too, so older clients stop publishing.
+                response = {"type": "drone_claim_conflict", "remoteId": remote_id,
+                            "claim": conflict}
+            else:
+                response = None
+            if response is not None:
+                event = None
+            else:
+                self._confirmation_event_seq += 1
+                confirmed_at_ms = max(now_ms, int((current_claim or {}).get("confirmedAtMs", 0) or 0) + 1)
+                event = {
+                    "type": "drone_confirmed",
+                    "mapId": map_id,
+                    "remoteId": remote_id,
+                    "zoneId": zone_id,
+                    "guid": guid,
+                    "confirmedByGuid": guid,
+                    "confirmedByDeviceName": conn.name or zone_id,
+                    "mappedId": payload.get("mappedId", "") or "",
+                    "trackLabel": payload.get("trackLabel", "") or payload.get("mappedId", "") or "",
+                    "org": payload.get("org", "") or "",
+                    "model": payload.get("model", "") or "",
+                    "ownerName": payload.get("ownerName", "") or "",
+                    "confirmedAtMs": confirmed_at_ms,
+                    "confirmationEventId": self._confirmation_event_seq,
+                }
+            if event is None:
+                owner = None
+            else:
+                existing_owner = self._owners.get((organization_id, map_id, remote_id))
+                owner = {
+                    "owner_guid": guid, "owner_zone_id": zone_id,
+                    "drone_ts": int((existing_owner or {}).get("drone_ts", 0) or 0),
+                    "distance_m": float((existing_owner or {}).get("distance_m", 0.0) or 0.0),
+                    "mapped_id": event["mappedId"],
+                    "lease_seq": int((existing_owner or {}).get("lease_seq", 0) or 0) + 1,
+                    "lease_expire_ms": now_ms + (R2C_LEASE_SEC * 1000), "source": "confirmation",
+                }
+                event["leaseSeq"] = owner["lease_seq"]
+                event["leaseExpireTs"] = owner["lease_expire_ms"]
+                self._remember_drone_confirmation_locked(organization_id, map_id, event, confirmed_at_ms)
+                self._owners[(organization_id, map_id, remote_id)] = owner
+        if response is not None:
+            await self._writer.send_text(websocket, json.dumps(response))
+            await self._writer.send_text(websocket, json.dumps(conflict))
+            return
+        try:
+            persisted = await self._persist_claim_state(organization_id, map_id, event, confirmed_at_ms, owner)
+        except Exception:
+            logger.exception("Could not persist ownership claim map=%s remote_id=%s", map_id, remote_id)
+            async with self._lock:
+                scope = self._scope_key(organization_id, map_id)
+                active = self._confirmed_drones_by_map.get(scope, {}).get(remote_id)
+                if active and active.get("confirmationEventId") == event["confirmationEventId"]:
+                    if previous_claim:
+                        self._confirmed_drones_by_map.setdefault(scope, {})[remote_id] = previous_claim
+                    else:
+                        self._forget_drone_confirmation_locked(organization_id, map_id, remote_id)
+                    key = (organization_id, map_id, remote_id)
+                    if previous_owner:
+                        self._owners[key] = previous_owner
+                    else:
+                        self._owners.pop(key, None)
+            await self._writer.send_text(websocket, json.dumps({
+                "type": "drone_claim_unavailable", "remoteId": remote_id,
+                "message": "The tracker could not verify this claim. It remains pending.",
+            }))
+            return
+        if not persisted:
+            # A later claim won while this save was waiting for the database.
+            # Never acknowledge or broadcast this superseded confirmation.
+            async with self._lock:
+                latest = self._confirmed_drones_by_map.get(self._scope_key(organization_id, map_id), {}).get(remote_id)
+                latest = dict(latest) if latest else None
+            if latest:
+                await self._writer.send_text(websocket, json.dumps({
+                    "type": "drone_claim_conflict", "remoteId": remote_id, "claim": latest,
+                }))
+                await self._writer.send_text(websocket, json.dumps(latest))
+            return
         logger.info(
             "r2c drone_confirmed: map=%s remote_id=%s confirmed_by=%s mapped_id=%s",
             map_id,
@@ -4212,13 +4315,27 @@ class R2CCoordinationHub:
                 and connection.device_credential.organization_id == organization_id]
         await self._writer.broadcast(recipients, json.dumps({"type": "aircraft_readiness_changed"}))
 
+    async def notify_organization_config_changed(self, organization_id: str, version_ms: int):
+        async with self._lock:
+            recipients = [socket for socket, connection in self._connections.items()
+                if connection.device_credential is not None
+                and connection.device_credential.organization_id == organization_id]
+        await self._writer.broadcast(recipients, json.dumps({"type": "organization_config_changed",
+                                                              "organizationConfigVersionMs": version_ms}))
+
     async def _load_state(self):
         now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
         async with AsyncSessionLocal() as session:
             zone_result = await session.execute(select(R2CZoneState).where(R2CZoneState.last_seen_ms >= now_ms - (R2C_LEASE_SEC * 1000)))
             owner_result = await session.execute(select(R2CDroneOwnerState).where(R2CDroneOwnerState.lease_expire_ms >= now_ms))
+            confirmation_result = await session.execute(
+                select(R2CDroneConfirmationState).where(
+                    R2CDroneConfirmationState.confirmed_at_ms >= now_ms - self.CONFIRMATION_RETENTION_MS
+                )
+            )
             zones = zone_result.scalars().all()
             owners = owner_result.scalars().all()
+            confirmations = confirmation_result.scalars().all()
             for zone in zones:
                 zone.online = False
                 zone.connection_state = "disconnected"
@@ -4262,6 +4379,29 @@ class R2CCoordinationHub:
                 }
                 for owner in owners
             }
+            names = {
+                (getattr(zone, "organization_id", "") or LEGACY_COORDINATION_ORGANIZATION_ID,
+                 zone.map_id, zone.guid): zone.name or zone.zone_id or zone.guid
+                for zone in zones
+            }
+            self._confirmed_drones_by_map.clear()
+            for state in confirmations:
+                organization_id = getattr(state, "organization_id", "") or LEGACY_COORDINATION_ORGANIZATION_ID
+                owner = self._owners.get((organization_id, state.map_id, state.remote_id))
+                # Restore only a live lease that still belongs to this confirmer.
+                if owner is None or owner.get("owner_guid") != state.confirmed_by_guid:
+                    continue
+                event = {
+                    "type": "drone_confirmed", "mapId": state.map_id, "remoteId": state.remote_id,
+                    "zoneId": state.zone_id, "guid": state.guid,
+                    "confirmedByGuid": state.confirmed_by_guid,
+                    "confirmedByDeviceName": names.get((organization_id, state.map_id, state.confirmed_by_guid), state.zone_id or state.confirmed_by_guid),
+                    "mappedId": state.mapped_id or "", "trackLabel": state.track_label or state.mapped_id or "",
+                    "org": state.org or "", "model": state.model or "", "ownerName": state.owner_name or "",
+                    "confirmedAtMs": int(state.confirmed_at_ms or 0),
+                    "leaseSeq": owner["lease_seq"], "leaseExpireTs": owner["lease_expire_ms"],
+                }
+                self._confirmed_drones_by_map.setdefault(self._scope_key(organization_id, state.map_id), {})[state.remote_id] = event
 
     async def _load_state_safe(self):
         try:
@@ -4301,6 +4441,7 @@ class R2CCoordinationHub:
                 (R2CZoneState, R2CZoneState.last_seen_ms < stale_zone_cutoff_ms),
                 (R2CDroneOwnerState, R2CDroneOwnerState.lease_expire_ms < now_ms),
                 (R2CRecentSighting, R2CRecentSighting.received_ms < stale_sighting_cutoff_ms),
+                (R2CDroneConfirmationState, R2CDroneConfirmationState.confirmed_at_ms < now_ms - self.CONFIRMATION_RETENTION_MS),
             ):
                 # One bounded batch per table and pass, including backlog after downtime.
                 ids = select(model.id).where(predicate).order_by(
@@ -4311,7 +4452,7 @@ class R2CCoordinationHub:
                     execution_options={"synchronize_session": False},
                 )
                 counts.append(result.rowcount)
-            deleted_zone_count, deleted_owner_count, deleted_sighting_count = counts
+            deleted_zone_count, deleted_owner_count, deleted_sighting_count, deleted_confirmation_count = counts
 
             await session.commit()
         deleted_preflight_count = 0
@@ -4324,14 +4465,16 @@ class R2CCoordinationHub:
             deleted_zone_count
             or deleted_owner_count
             or deleted_sighting_count
+            or deleted_confirmation_count
             or deleted_preflight_count
         ):
             logger.info(
                 "R2C persisted-state cleanup removed zones=%s owners=%s "
-                "sightings=%s video_preflights=%s",
+                "sightings=%s confirmations=%s video_preflights=%s",
                 deleted_zone_count,
                 deleted_owner_count,
                 deleted_sighting_count,
+                deleted_confirmation_count,
                 deleted_preflight_count,
             )
 
@@ -4447,28 +4590,45 @@ class R2CCoordinationHub:
             await session.commit()
 
     async def _upsert_owner_state(self, organization_id: str, map_id: str, remote_id: str, owner: dict):
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(R2CDroneOwnerState).where(
-                    R2CDroneOwnerState.organization_id == organization_id,
-                    R2CDroneOwnerState.map_id == map_id,
-                    R2CDroneOwnerState.remote_id == remote_id
-                )
-            )
-            state = result.scalar_one_or_none()
-            if state is None:
-                state = R2CDroneOwnerState(organization_id=organization_id, map_id=map_id, remote_id=remote_id)
-                session.add(state)
-            state.owner_guid = owner.get("owner_guid", "")
-            state.owner_zone_id = owner.get("owner_zone_id", "")
-            state.first_drone_ts = int(owner.get("drone_ts", 0) or 0)
-            state.first_distance_m = float(owner.get("distance_m", 0.0) or 0.0)
-            state.mapped_id = owner.get("mapped_id", "") or ""
-            state.lease_seq = int(owner.get("lease_seq", 0) or 0)
-            state.lease_expire_ms = int(owner.get("lease_expire_ms", 0) or 0)
-            state.updated_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
-            await session.commit()
+        for attempt in range(3):
+            try:
+                async with AsyncSessionLocal() as session:
+                    await self._write_owner_state(session, organization_id, map_id, remote_id, owner)
+                    await session.commit()
+                return
+            except IntegrityError:
+                if attempt == 2:
+                    raise
 
+    async def _write_owner_state(self, session, organization_id: str, map_id: str, remote_id: str, owner: dict):
+        now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
+        lease_seq = int(owner.get("lease_seq", 0) or 0)
+        lease_expire_ms = int(owner.get("lease_expire_ms", 0) or 0)
+        scope = (
+                R2CDroneOwnerState.organization_id == organization_id,
+                R2CDroneOwnerState.map_id == map_id,
+                R2CDroneOwnerState.remote_id == remote_id
+        )
+        values = dict(
+            owner_guid=owner.get("owner_guid", ""), owner_zone_id=owner.get("owner_zone_id", ""),
+            first_drone_ts=int(owner.get("drone_ts", 0) or 0),
+            first_distance_m=float(owner.get("distance_m", 0.0) or 0.0),
+            mapped_id=owner.get("mapped_id", "") or "", lease_seq=lease_seq,
+            lease_expire_ms=lease_expire_ms, updated_ms=now_ms,
+        )
+        result = await session.execute(update(R2CDroneOwnerState).where(
+            *scope, or_(R2CDroneOwnerState.lease_seq < lease_seq,
+                and_(R2CDroneOwnerState.lease_seq == lease_seq,
+                     R2CDroneOwnerState.lease_expire_ms <= lease_expire_ms),
+                R2CDroneOwnerState.lease_expire_ms < now_ms)).values(**values))
+        if not result.rowcount:
+            exists = await session.scalar(select(R2CDroneOwnerState.id).where(*scope).limit(1))
+            if exists is None:
+                session.add(R2CDroneOwnerState(organization_id=organization_id, map_id=map_id,
+                    remote_id=remote_id, **values))
+                return True
+            return False
+        return True
     async def _delete_owner_state(self, organization_id: str, map_id: str, remote_id: str):
         async with AsyncSessionLocal() as session:
             result = await session.execute(
@@ -4484,40 +4644,58 @@ class R2CCoordinationHub:
                 await session.commit()
 
     async def _upsert_confirmation_state(self, organization_id: str, map_id: str, event: dict, confirmed_at_ms: int):
+        for attempt in range(3):
+            try:
+                async with AsyncSessionLocal() as session:
+                    await self._write_confirmation_state(session, organization_id, map_id, event, confirmed_at_ms)
+                    await session.commit()
+                return
+            except IntegrityError:
+                if attempt == 2:
+                    raise
+
+    async def _persist_claim_state(self, organization_id: str, map_id: str, event: dict, confirmed_at_ms: int, owner: dict):
+        # Commit the claim and its lease together. Retry a competing insert against
+        # the unique scope index; conditional updates keep an older lease from winning.
+        for attempt in range(3):
+            try:
+                async with AsyncSessionLocal() as session:
+                    if not await self._write_owner_state(session, organization_id, map_id, str(event["remoteId"]), owner):
+                        return False
+                    if not await self._write_confirmation_state(session, organization_id, map_id, event, confirmed_at_ms):
+                        return False
+                    await session.commit()
+                return True
+            except IntegrityError:
+                if attempt == 2:
+                    raise
+
+    async def _write_confirmation_state(self, session, organization_id: str, map_id: str, event: dict, confirmed_at_ms: int):
         remote_id = str(event.get("remoteId", "") or "")
         if not map_id or not remote_id:
-            return
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(R2CDroneConfirmationState).where(
-                    R2CDroneConfirmationState.organization_id == organization_id,
-                    R2CDroneConfirmationState.map_id == map_id,
-                    R2CDroneConfirmationState.remote_id == remote_id
-                )
-            )
-            state = result.scalar_one_or_none()
-            if state is None:
-                state = R2CDroneConfirmationState(organization_id=organization_id, map_id=map_id, remote_id=remote_id)
-                session.add(state)
-            state.zone_id = event.get("zoneId", "") or ""
-            state.guid = event.get("guid", "") or ""
-            state.confirmed_by_guid = event.get("confirmedByGuid", "") or ""
-            state.mapped_id = event.get("mappedId", "") or ""
-            state.track_label = event.get("trackLabel", "") or ""
-            state.org = event.get("org", "") or ""
-            state.model = event.get("model", "") or ""
-            state.owner_name = event.get("ownerName", "") or ""
-            state.confirmed_at_ms = confirmed_at_ms
-            cutoff_ms = confirmed_at_ms - self.CONFIRMATION_RETENTION_MS
-            result = await session.execute(
-                select(R2CDroneConfirmationState).where(
-                    R2CDroneConfirmationState.confirmed_at_ms < cutoff_ms
-                )
-            )
-            for stale in result.scalars().all():
-                await session.delete(stale)
-            await session.commit()
-
+            return False
+        scope = (
+                R2CDroneConfirmationState.organization_id == organization_id,
+                R2CDroneConfirmationState.map_id == map_id,
+                R2CDroneConfirmationState.remote_id == remote_id
+        )
+        values = dict(
+            zone_id=event.get("zoneId", "") or "", guid=event.get("guid", "") or "",
+            confirmed_by_guid=event.get("confirmedByGuid", "") or "",
+            mapped_id=event.get("mappedId", "") or "", track_label=event.get("trackLabel", "") or "",
+            org=event.get("org", "") or "", model=event.get("model", "") or "",
+            owner_name=event.get("ownerName", "") or "", confirmed_at_ms=confirmed_at_ms,
+        )
+        result = await session.execute(update(R2CDroneConfirmationState).where(
+            *scope, R2CDroneConfirmationState.confirmed_at_ms < confirmed_at_ms).values(**values))
+        if not result.rowcount:
+            exists = await session.scalar(select(R2CDroneConfirmationState.id).where(*scope).limit(1))
+            if exists is None:
+                session.add(R2CDroneConfirmationState(organization_id=organization_id, map_id=map_id,
+                    remote_id=remote_id, **values))
+                return True
+            return False
+        return True
     async def _delete_confirmation_state(self, organization_id: str, map_id: str, remote_id: str):
         if not map_id or not remote_id:
             return
@@ -4588,14 +4766,25 @@ class R2CCoordinationHub:
                 select(R2CZoneState).where(
                     R2CZoneState.organization_id == organization_id,
                     R2CZoneState.map_id == map_id,
-                    R2CZoneState.online == True,
                     R2CZoneState.last_seen_ms >= recent_zone_cutoff_ms,
                 )
             )
+            owner_result = await session.execute(
+                select(R2CDroneOwnerState).where(
+                    R2CDroneOwnerState.organization_id == organization_id,
+                    R2CDroneOwnerState.map_id == map_id,
+                    R2CDroneOwnerState.lease_expire_ms >= now_ms,
+                )
+            )
+            active_owners = {owner.remote_id: owner for owner in owner_result.scalars().all()}
             active_zone_keys = set()
+            zone_names = {}
             for zone in zone_result.scalars().all():
-                active_zone_keys.add(str(zone.zone_id or ""))
-                active_zone_keys.add(str(zone.guid or ""))
+                if zone.online:
+                    active_zone_keys.add(str(zone.zone_id or ""))
+                    active_zone_keys.add(str(zone.guid or ""))
+                zone_names[str(zone.zone_id or "")] = str(zone.name or zone.zone_id or "")
+                zone_names[str(zone.guid or "")] = str(zone.name or zone.guid or "")
             events = []
             stale_states = []
             for state in confirmation_result.scalars().all():
@@ -4604,7 +4793,9 @@ class R2CCoordinationHub:
                     str(state.guid or ""),
                     str(state.zone_id or ""),
                 }
-                if not any(key and key in active_zone_keys for key in confirmer_keys):
+                owner = active_owners.get(state.remote_id)
+                if ((owner is None or owner.owner_guid not in confirmer_keys) and
+                        not any(key and key in active_zone_keys for key in confirmer_keys)):
                     stale_states.append(state)
                     continue
                 events.append({
@@ -4614,12 +4805,15 @@ class R2CCoordinationHub:
                     "zoneId": state.zone_id,
                     "guid": state.guid,
                     "confirmedByGuid": state.confirmed_by_guid,
+                    "confirmedByDeviceName": zone_names.get(str(state.confirmed_by_guid or ""), ""),
                     "mappedId": state.mapped_id or "",
                     "trackLabel": state.track_label or state.mapped_id or "",
                     "org": state.org or "",
                     "model": state.model or "",
                     "ownerName": state.owner_name or "",
                     "confirmedAtMs": int(state.confirmed_at_ms or 0),
+                    "leaseSeq": int(owner.lease_seq) if owner and owner.owner_guid == state.confirmed_by_guid else -1,
+                    "leaseExpireTs": int(owner.lease_expire_ms) if owner and owner.owner_guid == state.confirmed_by_guid else 0,
                 })
             for state in stale_states:
                 await session.delete(state)
@@ -5942,7 +6136,7 @@ def validated_organization_config_snapshot(snapshot: object) -> tuple[dict, str]
     allowed = {
         "configSchemaVersion", "sourcePlatform", "sourceAppVersion",
         "sourceAppBuild", "organizationCaltopoEnc", "mutualAidCaltopoEnc",
-        "droneSpecs", "aircraftSchemaVersion",
+        "droneSpecs", "aircraftSchemaVersion", "droneOwnership",
     }
     if set(snapshot) - allowed:
         raise ValueError("Organization configuration contains unsupported fields.")
@@ -6010,6 +6204,10 @@ def validated_organization_config_snapshot(snapshot: object) -> tuple[dict, str]
     }
     if snapshot.get("aircraftSchemaVersion") == 1:
         normalized_snapshot["aircraftSchemaVersion"] = 1
+    if "droneOwnership" in snapshot:
+        if snapshot["droneOwnership"] not in ("all_detected", "streaming_device", "streaming_shared_incident"):
+            raise ValueError("Invalid Drone Ownership setting.")
+        normalized_snapshot["droneOwnership"] = snapshot["droneOwnership"]
     encoded = json.dumps(normalized_snapshot, separators=(",", ":"), sort_keys=True)
     if len(encoded.encode("utf-8")) > ORG_CONFIG_MAX_BYTES:
         raise ValueError("Organization configuration exceeds the 256 KiB limit.")
@@ -6047,6 +6245,11 @@ def organization_config_diff(current: Optional[dict], proposed: dict) -> dict:
             for key in sorted(old_drones.keys() & new_drones.keys())
             if comparable_drone(old_drones[key]) != comparable_drone(new_drones[key])
         ],
+        "droneOwnership": {
+            "before": current.get("droneOwnership", "all_detected"),
+            "after": proposed.get("droneOwnership", "all_detected"),
+            "changed": current.get("droneOwnership", "all_detected") != proposed.get("droneOwnership", "all_detected"),
+        },
     }
 
 
