@@ -1,3 +1,6 @@
+v1.4.98:
+* Update locked dependencies to clear the release-gate dependency audit: aiohttp 3.14.5, certifi 2026.10.23, dnspython 2.9.2, pyasn1 0.6.5, and yarl 1.25.1 required by aiohttp.
+
 v1.4.97:
 * Save aircraft ownership claims and their owner leases together. If that write fails, the claim is not granted. A replacement must name the current claim, and an older lease cannot overwrite a newer one.
 * Accept optional Drone Ownership on the existing organization configuration snapshot. Keep the published value when an older app omits it, reject an unknown mode, and show the change in the administrator review before approval. There is no separate immediate-save control.
