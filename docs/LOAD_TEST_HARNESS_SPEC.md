@@ -11,6 +11,7 @@ Related:
 - September 2026 source review: [MULTI_ORG_PREREL_REVIEW_2026-09-10.md](MULTI_ORG_PREREL_REVIEW_2026-09-10.md). Several of its line numbers and two of its findings (SQL echo, weather still on the event loop) are stale. Use this spec for the current hot spots.
 - Temporary always-on during an incident, after a baseline exists: [CAMPAIGN_MODE_CHECKLIST.md](CAMPAIGN_MODE_CHECKLIST.md)
 - Protocol rates the harness copies: [R2C_PROTOCOL.md](../R2C_PROTOCOL.md)
+- Tablet behavior below is from RID2Caltopo 2.5.8 (`origin/main` `0eac4703`), as read by the R2C team. It is not in this repository.
 
 ## Constraints this harness is for
 
@@ -32,7 +33,7 @@ A local driver that:
 
 1. Starts one Tracker process shaped like the current Cloud Run service.
 2. Simulates N organizations, for N in **10, 20, 40, 80, 160**.
-3. Runs scenarios A, B, and C at each N. B has a 6-tablet primary and a 16-tablet upper bound. C-warm is the support-gate reconnect; C-cold is recorded and not scored.
+3. Runs scenarios A, B, and C at each N. B has a 6-tablet primary and a 16-tablet upper bound. C-warm is the support-gate reconnect, lockstep at about +2 s. C-cold is recorded and not scored.
 4. Records the metrics below and scores them against the proposed thresholds.
 5. Repeats a single rung with one flag on only after the flags-off baseline for that rung is stored.
 
@@ -71,7 +72,7 @@ docker run --rm \
   harness-r2c-tracker
 ```
 
-`--cpus=1` matches the one vCPU the instance has while a request is active. **TODO:** confirm the live Cloud Run CPU and concurrency with `services describe` before treating this container as a production twin. `deploy.sh` omits both flags. Docker cannot freeze the event loop between requests the way Cloud Run CPU throttling does while the container stays up. Scenario A-park plus scenario C-cold is the local stand-in for scale-from-zero. Scenario C-warm restarts the process while clients are still connected, which is the heavier reconnect. Do not describe a docker run as a CPU-throttling reproduction.
+`--cpus=1` matches the one vCPU the instance has while a request is active. **TODO:** confirm the live Cloud Run CPU and concurrency with `services describe` before treating this container as a production twin. `deploy.sh` omits both flags. Docker cannot freeze the event loop between requests the way Cloud Run CPU throttling does while the container stays up. Scenario A-idle plus scenario C-cold is the local stand-in for scale-from-zero. Scenario C-warm restarts the process while clients are still connected, which is the heavier reconnect. Do not describe a docker run as a CPU-throttling reproduction.
 
 Use PostgreSQL 16 for both databases (the compose file in the repo is a stub and is not the harness). Apply the app's own startup migrations by booting the app. Point weather and FAA at local stubs. Bind `/flightlogs-vol` to a local directory for the baseline. Treat those upload latencies as a lower bound: production writes go through Cloud Storage FUSE. A later pass may mount a non-production bucket with gcsfuse; that pass is not required to record the first baseline, and it must not be the production flight-log bucket.
 
@@ -95,7 +96,7 @@ Run two modes:
 | Tenant engine | `main.py:940-942`, sessions at `1158-1162` | `create_async_engine(..., echo=False, pool_pre_ping=True, pool_recycle=300)`. `pool_size` and `max_overflow` are not set, so SQLAlchemy's defaults apply (5 and 10). The control-plane engine matches (`control_plane.py:1784-1789`). The September review's "echo=True" finding does not match this tree. |
 | Extra DB connection | `main.py:1818-1824`, `1856+` | One dedicated PostgreSQL LISTEN connection for video notifications when the control-plane URL is Postgres. Count it in the connection budget. |
 | WebSocket backpressure | `runtime_io.py:50-112` | `WebSocketWriter` serializes writes per socket, allows 16 pending messages, and closes with code 1013 after a 2 second send budget. Broadcasts fan out with `asyncio.gather` and do not hold the hub lock during the send (`main.py:4300-4306`). |
-| Silence timeout | `main.py:668-671`, `13152-13191` | A socket with no client frame for `R2C_CLIENT_SILENCE_SEC` (default 60, and at least two heartbeat intervals) is closed with code 4000. The harness must heartbeat connected clients inside that window or the server will drop them. |
+| Silence timeout | `main.py:668-671`, `13152-13191` | A socket with no text frame for `R2C_CLIENT_SILENCE_SEC` (default 60, and at least two heartbeat intervals) is closed with code 4000. The wait is `websocket.receive_text()`, so an Android OkHttp ping is not a heartbeat. Android flying heartbeats land at 45–60 s (RID2Caltopo 2.5.8), against this 60 s text timeout. |
 | Restart load | `main.py:1811-1816`, `2307-2310`, `4326-4342` | Startup loads every org's recent zones, owners, and confirmations in one query each, then every new `connect` awaits that task. A warm restart with the full live set queued behind one load is the heavier case. A cold start runs the same code with an empty or parked working set. |
 | Browser "SSE" | `main.py:13046-13084`, `static/organization_streams_live.js:42` | `/{designator}/streams/events` accepts a socket, sends one message, and closes. It is not a long-lived stream. The streams page polls `GET /{designator}/streams/live-status` every 10 seconds while the tab is visible and a stream is advertised. Count HTTP poll failures here, not SSE drops. |
 | FAA proxy | `faa_proxy.py:81-131`, `382` | `GET /faa/notams` (`main.py:6070-6112`). Cache TTL default 90 seconds, at most 8 concurrent upstream `requests.get` calls, 35 second timeout, run via `asyncio.to_thread`. |
@@ -114,7 +115,7 @@ Pinned by this repo (use these; do not retune them to make a rung pass):
 | Idle park advisory | 30 s | `R2C_IDLE_PARK_SEC`, `main.py:674`, sent as `idleParkSec` on `hello_ack` (`main.py:3459-3462`). The `120` in the protocol example is an example payload, not the server default. |
 | Zone-update broadcast throttle | 60 s per map unless forced | `R2C_HEARTBEAT_ZONE_UPDATE_SEC`, `main.py:673`, `4263-4274` |
 | Non-owner sighting send | 1 per drone per 3 s | `R2C_PROTOCOL.md` ("currently to one update every three seconds by default") |
-| Peer-traffic schedule | 1 s when the nearest other aircraft is within 5 pad-heights; 2 / 4 / 8 / 16 s as that ratio grows; 16 s when distance or pad is missing | `R2CCoordinationHub._shadow_traffic_interval_ms`, `main.py:2078-2090`. The server tells the sender; the harness must follow `traffic_schedule.shadowIntervalMs`, starting at 16 s until the first schedule arrives. |
+| Peer-traffic schedule | 1 s when the nearest other aircraft is within 5 pad-heights; 2 / 4 / 8 / 16 s as that ratio grows; 16 s when distance or pad is missing | `R2CCoordinationHub._shadow_traffic_interval_ms`, `main.py:2078-2090`. The client starts at its own 1 s default and then follows `traffic_schedule.shadowIntervalMs` (1–16 s). |
 | Peer-traffic fan-out | only sockets within 1 mile (1609.344 m) | `PEER_TRAFFIC_RADIUS_M`, `main.py:1504`, filter at `4018-4026` |
 | Weather timeout | connect 3.05 s, read 10 s | `requests.get(..., timeout=(3.05, 10))`, `main.py:5243` |
 | NOTAM cache | 90 s | `FAA_PROXY_CACHE_TTL_SEC`, `faa_proxy.py:81-86` |
@@ -125,19 +126,20 @@ Marked **PROPOSAL** (change only by editing this spec, not by a quiet harness tw
 
 | Knob | Value | Why |
 | --- | --- | --- |
-| Quiet org, connected tablets | 2 | A truck tablet and a standby. Enough to heartbeat; not a search team. |
+| Quiet org, tablets | 2, one iOS and one Android | A truck tablet and a standby. With no map and no drones they park; they do not hold a socket. |
+| Platform mix | half iOS, half Android | Support gate. Primary hot org is 3 iOS + 3 Android. Upper bound is 8 + 8. |
 | `HOT_ZONES` | 3 on the support gate; allowed 3 or 4 | Ken, 2026-11-14. A hot org is a mutual-aid search of 3–4 zones. |
 | `DRONES_PER_ZONE` | 2 on the support gate; allowed 2, 3, or 4 | Ken, 2026-11-14. Each zone has 2–4 drones. |
 | Tablets per hot org | `HOT_ZONES × DRONES_PER_ZONE` | One tablet per drone. Primary is 3 × 2 = **6**. Upper bound is 4 × 4 = **16**. |
 | Who sees a drone | the other tablets in the same zone | Same zone is one segment. `CROSS_ZONE_VISIBILITY` defaults off. |
 | Who is inside 1 mile | the tablets in that drone's zone | Other zones of the same hot org are placed more than 1 mile away. |
-| Owner sighting rate while tracking | **TODO.** Placeholder 1 / s / owned drone | Not pinned in this repo, and Ken has not confirmed it. Tag every result file `owner_sighting_rate: "TODO"`. Non-owner relays stay at 1 per 3 s. |
+| Owner frames while flying | ~1 `sighting` + 1 `traffic_position` per second per drone | RID2Caltopo 2.5.8. About 2 websocket text frames/s/drone, not batched. See the client section. |
 | Flight-log uploads | 1 / drone / hour, 2 MiB GeoJSON | One sortie per drone. Primary is 6 / hot org / hour; upper bound is 16. Size stays inside `MAX_FLIGHT_LOG_BYTES` (16 MiB). Sortie length is still a proposal. |
 | `drone_confirmed` | 1 / drone / hour | One operator save per sortie. Primary 6 / hot org / hour; upper bound 16. |
-| NOTAM polls | each connected hot tablet, every 90 s | Matches the cache TTL. No client poll interval is in this repo. Primary is 6 tablets; upper bound is 16. |
-| Org-config fetch | once per `hello` | The server pushes `organization_config_changed`. No periodic poll is specified. |
+| NOTAM polls | every 1800 s, or when the tablet moves 0.25 nm | RID2Caltopo 2.5.8. The server cache TTL is 90 s and is not the client timer. |
+| Org-config fetch | none on 2.5.8 | The upcoming BTRX branch adds a startup retry. It is a labeled variant, not the baseline. |
 | Browser on a hot org | one visible streams tab | 1 poll / 10 s of `live-status`. No thumbnail fetch unless the optional video variant is on. |
-| `RECONNECT_DELAY` | `uniform-0-5` and `burst` | Client backoff is unknown and can be very random. Run both until RID2Caltopo's schedule is known. `uniform-0-5` draws each socket independently from 0 to 5 s. `burst` is delay 0 for every socket. |
+| `RECONNECT_DELAY` | `lockstep-2s` primary; `uniform-0-5` comparison | 2.5.8 has no jitter. Backoff is 2, 4, 8, 10, 10… s. A restart herds open tablets at about +2 s. |
 | Identical foreign keys | every org reuses the same `mapId` and `remoteId` strings | The review asked for this collision case. Isolation is part of the pass. |
 
 ## Ladder
@@ -152,43 +154,69 @@ Steady window, scenarios A and B: 60 s warmup (covers the 60 s zone-update throt
 
 Correctness on every rung, not just the support gate: a socket may only receive coordination messages for its own organization id. A shared `mapId` or `remoteId` leaking into another org's `owner_assigned`, `zone_update`, `relay_sighting`, or `peer_traffic_position` is a fail.
 
+## RID2Caltopo 2.5.8 client behavior
+
+Source: RID2Caltopo released 2.5.8, `origin/main` `0eac4703`, as read by the R2C team. The harness copies these numbers. It does not retune them.
+
+**Flying drone, both platforms.** About one `sighting` and one `traffic_position` per second per drone, about two websocket text frames per second, with no batching. Samples less than 1 s apart are dropped. Movement under 2 ft is re-sent on a 3 s keepalive instead of at 1 s. `traffic_position` starts at a 1 s default and then follows the server schedule, which this tracker clamps to 1–16 s (`main.py:2078-2090`). Non-owner `sighting`s are throttled to 3 s. Android sends these only while a CalTopo map is up. iOS sends them whenever coordination is required. A hot-org search has a map up and coordination required, so both platforms send.
+
+**Heartbeat.** iOS is fixed at 15 s, the first one 15 s after the socket opens, and iOS sends no websocket pings. Android's base interval is 15 s, the first heartbeat goes out immediately on open, and a location update can add another heartbeat if the last one was at least 1 s ago. On 2.5.8 those location updates are every 10 s or 5 m. Android sends no heartbeat while one is still unacked, and it suppresses the interval heartbeat while it owns a drone that had a sighting in the last 30 s. While flying, that lands at an effective 45–60 s. The support gate uses 45 s, the busier end of that range. Android's OkHttp client pings every 20 s. Those pings are not text frames and do not reset `receive_text` at `main.py:13152`.
+
+**Video presence.** Every 15 s while a managed-video incident is set. iOS piggybacks that on the heartbeat. Android sends it as its own frame. The support gate leaves video off.
+
+**Idle park.** After 30 s with no drones and no map, the tablet sends `idle` and closes the socket. The server's `idleParkSec` (default 30 s, `main.py:674`) is the override. The tablet reconnects on the next sighting. The first connect is immediate. Quiet tablets are a connect/disconnect churn, not a standing heartbeat.
+
+**NOTAMs.** `GET /faa/notams` every 1800 s, or when the tablet moves 0.25 nm (about 463 m). While the request is failing, Android retries every 15 s. iOS retries every 15 s until the first success. There is no jitter on that retry.
+
+**Reconnect.** Websocket. The first connect is immediate. After a failure the backoff is 2, 4, 8, 10, 10… seconds, capped at 10 s, with no jitter. A tracker restart therefore brings every tablet that still had a socket back together at about +2 s. Android resets that backoff when the socket opens. iOS resets it only on `hello_ack`. A missing ack (10 s timeout, checked every 5 s) makes Android reconnect at 0 delay without growing the backoff; iOS stays on the normal ladder. On 401/403, Android keeps reconnecting with backoff, and iOS stops and does an HTTP re-auth. A dead tracker that does not reset the TCP connection is noticed in about 10–20 s on Android and in up to about 25 s on iOS; the +2 s herd is on top of that notice. A process kill that resets sockets is noticed immediately, so C-warm uses notice-now plus the +2 s step.
+
+**Upcoming BTRX branch, not 2.5.8.** Location updates tighten to every 5 s or 2 m, so a map-up Android tablet can add heartbeats that often, still at least 1 s apart and still not while a heartbeat is unacked. Startup adds `GET /api/v1/organization-config/current`: three tries at 0, +3, and +8 s, then a background interval of 30 s doubling to a 300 s cap (30, 60, 120, 240, 300), no jitter, until the device is authorized. Run this only as a labeled BTRX variant.
+
 ## Scenario A — quiet fleet
 
-Mostly idle organizations. No sightings, no traffic, no uploads, no NOTAMs, no browser polls.
+No sightings in the steady window, no traffic, no uploads, no browser polls. Two tablets per org, one iOS and one Android.
 
-**A2, heartbeat only (the load case).** Each of the N orgs keeps 2 zones connected for the whole window. Each zone sends `hello` once, then `heartbeat` every 15 s, and nothing else. At N = 160 that is 320 sockets and 320/15 ≈ 21.3 heartbeats/s, each doing a zone upsert.
+**A-idle (support gate).** No map and no drones, which is the 2.5.8 park condition. At t = 0 every quiet tablet connects immediately, in lockstep, and sends `hello`. They heartbeat by the platform rules above until 30 s, send `idle`, and close. They stay down, because reconnect is on the next sighting and there is not one yet. At N = 160 that is 320 sockets open for half a minute, then zero. After the closes, hold 60 s at zero sockets. This is the scale-to-zero case.
 
-**A-park (the scale-to-zero case).** Same population, but each zone sends `hello`, one `heartbeat`, then `idle` with `reason=no_active_drones`, then a normal close. The harness waits until `r2c_hub.connection_count()` is 0 (in-process) or the server has no `/ws/r2c` request (container logs). Hold the idle for 60 s and confirm the process is not accumulating sessions. Then stop the container. This is the local picture of "quiet orgs can scale to zero". Run A-park at N = 10 and N = 20 for the support gate, and at the higher rungs as characterization.
+**A-churn (support gate, N = 10 and N = 20).** Continue A-idle. At t = 180 s give each quiet org one sighting. Both tablets reconnect immediately (first connect), send the sighting, then go 30 s with no map and no drones, send `idle`, and close again. One extra connect/disconnect wave. That is the churn model. The 180 s gap is a scripted sighting, not a client timer.
+
+**A-map (support gate).** A CalTopo map is up and no drone is owned, so the park condition is not met and the sockets stay open. iOS heartbeats every 15 s with the first at +15 s. Android heartbeats immediately and then every 15 s. Tablets are stationary, so the 5 m location gate does not add extra Android heartbeats. Android still sends an OkHttp ping every 20 s. At N = 160 that is 320 sockets and 320/15 ≈ 21.3 heartbeat text frames/s, plus 160 Android tablets pinging every 20 s (8 protocol pings/s). Each heartbeat still does a zone upsert.
+
+NOTAM on A-map: one `GET /faa/notams` per tablet at map-up, then not again inside a 5 minute window unless the tablet moves 0.25 nm. A-idle tablets have no map and do not poll. A moving-tablet variant (location every 10 s / 5 m, and the BTRX 5 s / 2 m variant) is optional and off the support gate.
 
 ## Scenario B — three hot orgs, everyone else quiet
 
-Exactly three orgs (`org-000`, `org-001`, `org-002`) run the hot profile. The other N−3 orgs run the A2 heartbeat profile on the same process. At N = 10 that is 3 hot + 7 quiet. There is no N at which more than three orgs are hot. Also run **B0** once, not on the ladder: the three hot orgs and zero quiet orgs, so the hot cost can be subtracted from the N = 10 B run.
+Exactly three orgs (`org-000`, `org-001`, `org-002`) run the hot profile. The other N−3 orgs run A-idle on the same process: they connect, park at 30 s, and stay down, so the measured window is the hot sockets plus whatever those parked orgs left in the database. At N = 10 that is 3 hot + 7 quiet. There is no N at which more than three orgs are hot. Also run **B0** once, not on the ladder: the three hot orgs and zero quiet orgs, so the hot cost can be subtracted from the N = 10 B run.
 
 Ken, 2026-11-14: a hot org is **3–4 zones, 2–4 drones per zone, one tablet per drone**, so **6–16 tablets and the same number of drones**. The old 12-zone / 4-aircraft sketch is retired.
 
-**B primary (the support gate).** `HOT_ZONES=3`, `DRONES_PER_ZONE=2`. That is 6 tablets, each owning one drone, in three zones on one map. Three hot orgs are 18 sockets. With quiet orgs at N = 20 that is 18 + 34 = 52 sockets. At N = 160 it is 18 + 314 = 332 sockets.
+**B primary (the support gate).** `HOT_ZONES=3`, `DRONES_PER_ZONE=2`. That is 6 tablets, each owning one drone, in three zones on one map. Three hot orgs are 18 sockets, and that is the measured window once the quiet orgs have parked. The opening connect is larger: at N = 20 the quiet tablets add 34 sockets for the first 30 s (52 total), and at N = 160 they add 314 (332 total), then those sockets close.
 
-**B upper bound (parameterized, required on N = 10 and N = 20).** `HOT_ZONES=4`, `DRONES_PER_ZONE=4`. That is 16 tablets and 16 drones per hot org, 48 hot sockets. At N = 20 with quiet orgs that is 48 + 34 = 82 sockets. The harness must accept any pair in the allowed ranges, and the result JSON must record the pair. A miss at 16 tablets is the top of the range Ken described. It does not erase a pass at 6 tablets, and it is not a reason to raise `max-instances`.
+**B upper bound (parameterized, required on N = 10 and N = 20).** `HOT_ZONES=4`, `DRONES_PER_ZONE=4`. That is 16 tablets and 16 drones per hot org, 48 hot sockets in the measured window. The opening connect at N = 20 is 48 + 34 = 82 sockets until the quiet orgs park. The harness must accept any pair in the allowed ranges, and the result JSON must record the pair. A miss at 16 tablets is the top of the range Ken described. It does not erase a pass at 6 tablets, and it is not a reason to raise `max-instances`.
 
 Same-zone tablets see that zone's drones. Other zones of the hot org are more than a mile away, so they do not relay those drones and they do not receive that zone's `peer_traffic_position`. Leave `CROSS_ZONE_VISIBILITY` off unless a later edit of this spec turns it on.
 
-Per hot org, primary (6 tablets), for the whole measured window:
+Per hot org, primary (6 tablets, 3 iOS + 3 Android), drones moving, for the whole measured window. Counts are from RID2Caltopo 2.5.8 plus the zone shape above.
 
 | Stream | Schedule | Server work |
 | --- | --- | --- |
-| 6 tablets | `hello`, then heartbeat / 15 s | zone upsert each heartbeat; that tablet's heartbeat extends the lease of the one drone it owns |
-| 6 owner sightings | **TODO** placeholder 1 / s each | `_upsert_owner_state`. Retag this row when the owner rate is known. |
-| 6 non-owner relays | each drone is seen by the other tablet in its zone: 6 / 3 s = 2 / s | `_record_sighting` insert |
-| 6 `traffic_position` | follow `shadowIntervalMs`. Drones in a zone sit within one pad-height, so expect ~1 / s each once `padFt` is set | global lock + distance math + fan-out to the other tablet in the zone |
+| 6 tablets on a map | `hello` at connect. iOS heartbeat every 15 s, first at +15 s (3/15 = 0.2 / s). Android flying heartbeat every 45 s, first immediately (3/45 ≈ 0.067 / s). Android sends none while one is unacked. | zone upsert each heartbeat; that tablet's heartbeat extends the lease of the one drone it owns |
+| Android pings | OkHttp ping every 20 s on the 3 Android tablets | protocol frames only. They do not reset the text silence timer |
+| 6 owner sightings | ~1 / s each while moving. Samples under 1 s are dropped. Under 2 ft of movement the client keeps a 3 s keepalive instead | `_upsert_owner_state` |
+| 6 non-owner relays | each drone is seen by the other tablet in its zone, throttled to 3 s: 6 / 3 = 2 / s | `_record_sighting` insert |
+| 6 `traffic_position` | client default 1 / s, no batching, then `shadowIntervalMs`. Drones in a zone sit within one pad-height with `padFt` set, so the server stays at 1 s | global lock + distance math + fan-out to the other tablet in the zone. Together with the owner sighting this is ~2 text frames/s/drone |
 | `drone_confirmed` | 6 / hour, spread across the window | claim persist + broadcast |
 | `PUT /{designator}/upload` | 6 / hour, 2 MiB | full-body buffer, weather worker, archive worker, submission lock |
-| `GET /faa/notams` | 6 tablets / 90 s | mostly cache hits after the first fetch per grid cell; stub still has to take the cache lock |
-| `GET /{designator}/api/v1/organization-config/current` | once per hello | control-plane read |
+| `GET /faa/notams` | one per tablet at map-up, then every 1800 s or 0.25 nm. Stationary segments do not move 0.25 nm during the 5 minute window | one lockstep burst of 6 requests per hot org at the start, then cache hits if anything repeats inside 90 s |
 | `GET /{designator}/streams/live-status` | 1 browser / 10 s | control-plane read, no long-lived socket |
 
-Upper bound (16 tablets) scales the same way: heartbeats 16/15 ≈ 1.07 / s, owner sightings 16 / s at the TODO placeholder, non-owner relays 16 drones × 3 other tablets / 3 s = 16 / s, traffic 16 / s with fan-out to the other 3 tablets in the zone, uploads and `drone_confirmed` 16 / hour, NOTAM polls 16 / 90 s.
+There is no organization-config poll on 2.5.8. The BTRX variant, off the support gate, adds the 0 / +3 / +8 s tries and the 30 s doubling schedule, and it tightens Android location updates to 5 s / 2 m.
 
-Place the drones of one zone within one pad-height of each other and set `padFt`, so the server's own scheduler settles at 1000 ms inside the zone. Place the zones more than 1 mile apart.
+Upper bound (16 tablets, 8 iOS + 8 Android) scales the same way: iOS heartbeats 8/15 ≈ 0.53 / s, Android flying heartbeats 8/45 ≈ 0.18 / s, Android pings 8/20 = 0.4 / s, owner sightings 16 / s, `traffic_position` 16 / s, non-owner relays 16 drones × 3 other tablets / 3 s = 16 / s, uploads and `drone_confirmed` 16 / hour, NOTAM 16 requests at map-up.
+
+Place the drones of one zone within one pad-height of each other and set `padFt`, so the server schedule stays at 1000 ms inside the zone. Place the zones more than 1 mile apart. The support gate uses the moving-drone path (about 1 sighting/s). A stationary-drone run, where the under-2 ft keepalive stretches sightings to 3 s, is optional.
+
+Android flying heartbeats at the 60 s end of the 45–60 s range sit on the server's 60 s text silence timeout. Record code 4000 on those Android sockets separately. iOS, at 15 s, should not see that close. Do not treat an OkHttp ping as proof the silence timer was reset.
 
 **Functional checks inside B, each hot org, once per rung:**
 
@@ -196,40 +224,49 @@ Place the drones of one zone within one pad-height of each other and set `padFt`
 - The same remote id uploaded concurrently by two orgs: both proceed. They must not share a submission lock. (The key includes `organization_id`.)
 - After the window, `len(_flight_submission_locks)` is 0. Growth means the prune lost the race or a waiter was stranded.
 
-**Stall injection, support gate only (N = 10 and N = 20), after the steady B window:** point the weather stub at a 10 s response (inside the read timeout, not a hang) and start one upload in each hot org at the same instant. Quiet-org `heartbeat_ack` latency during those 10 s is the cross-tenant number. Repeat with the archive stub delaying the `/flightlogs-vol` write by 2 s if the harness has a slow-write stand-in; otherwise record "archive delay not injected" and do not claim FUSE behavior.
+**Stall injection, support gate only (N = 10 and N = 20), after the steady B window:** hold the quiet orgs on A-map for this run so they have a heartbeat to measure. Point the weather stub at a 10 s response (inside the read timeout, not a hang) and start one upload in each hot org at the same instant. Those quiet-org `heartbeat_ack` times during the 10 s are the cross-tenant number. Repeat with the archive stub delaying the `/flightlogs-vol` write by 2 s if the harness has a slow-write stand-in; otherwise record "archive delay not injected" and do not claim FUSE behavior.
 
 **Body-cap probe, once, not every rung:** one `PUT` of 100 MiB and one `PUT` of 120 MiB on a hot org. Record RSS delta, whether the request was rejected, and how long quiet-org heartbeats stalled. Today the live path has no cap, so a 120 MiB accept is a measurement, not a harness bug. A later flag that rejects above the cap is a separate run.
 
-Optional, off by default: one hot org advertising a video stream and fetching `GET /r2c-thumbnail/{tablet_code}/{session_id}.jpg` (`main.py:10230`) on the 10 s poll. Keep it out of the support-gate totals so a search without video is the baseline.
+Optional, off by default: one hot org with a managed-video incident set. Video presence is every 15 s (RID2Caltopo 2.5.8). iOS piggybacks it on the heartbeat. Android sends a separate frame. The browser still polls `live-status` every 10 s and may fetch `GET /r2c-thumbnail/{tablet_code}/{session_id}.jpg` (`main.py:10230`). Keep this out of the support-gate totals.
+
+**NOTAM error retry, support gate only, once after steady B.** Fail the stub for 45 s. Android retries every 15 s for the whole failure. iOS retries every 15 s until the first success. No jitter, so the hot tablets retry in lockstep. Then return success. Record how the FAA upstream cap of 8 (`faa_proxy.py:117-121`) behaves under that herd.
 
 ## Scenario C — reconnect stampede
 
-Ken, 2026-11-14: field cold-start timing is unknown and can be very random. A **warm restart** (a new revision, or an instance restart, while clients are already connected) is the load he expects to hurt. Warm restart is the primary scenario C. Cold start stays as a secondary variant. Both use the same delay parameter until the client schedule is known.
+Warm restart is the primary case: a new revision or an instance restart while sockets are still open. RID2Caltopo 2.5.8 makes that a lockstep herd. The backoff after a failure is 2, 4, 8, 10, 10… seconds, capped at 10, with no jitter, so every tablet that saw the same close comes back together at about +2 s. The first connect of a fresh app is immediate; a restart is a failure retry, so the first step is 2 s, not 0. Cold start stays secondary.
 
-Population is scenario B's sockets at that N. Primary hot shape: 3 × 6 hot tablets plus (N−3) × 2 quiet tablets. At N = 20 that is 18 + 34 = 52 sockets. At N = 160 it is 18 + 314 = 332 sockets. The upper-bound shape on the support gate replaces 6 with 16 (48 hot tablets): 82 sockets at N = 20.
+Two populations:
 
-`RECONNECT_DELAY`, run as two separate result files:
+- **Campaign.** Quiet orgs have already parked (A-idle). The open sockets are the hot tablets only: 18 at the primary shape, 48 at the 16-tablet upper bound. N still matters because `_load_state` reads every org.
+- **Fleet.** Quiet orgs are on A-map, so every tablet is connected. Primary shape at N = 20 is 18 + 34 = 52 sockets. At N = 160 it is 18 + 314 = 332. Upper bound at N = 20 is 48 + 34 = 82. This is the "all clients connected" restart.
 
-- `uniform-0-5`. Each socket draws one delay uniformly from 0 to 5 seconds.
-- `burst`. Every socket uses delay 0. This is the worst case, not a guess at the client.
+`RECONNECT_DELAY`, each as its own result file:
 
-The delay starts when the client observes the socket close. The client connects at the later of "process is listening" and "close time plus delay", then sends `hello` and resumes its A2 or B schedule. Record which distribution the file used.
+- `lockstep-2s`. Every open socket reconnects at +2 s after it observes the close. No jitter. If that attempt fails, the next herd is at +4 s, then +8 s, then every 10 s, still together. This is the 2.5.8 client, and it is the support-gate stampede.
+- `uniform-0-5`. Each socket draws a delay uniformly from 0 to 5 s. This is the **with client jitter** comparison. The 2.5.8 client does not do this. Use it when judging the recommendation below.
 
-**C-warm (primary).** This is a revision deploy or a process restart with the working set still live.
+The client connects at the later of "the process is listening" and "close time plus delay", sends `hello`, and resumes its schedule. Android resets backoff when the socket opens. iOS resets it only when `hello_ack` arrives. Record which delay the file used. Do not answer these reconnects with 401 or 403: Android would keep backing off, and iOS would stop and re-auth over HTTP, which is a different test.
 
-1. Run B until every connected socket has persisted at least one heartbeat.
-2. Kill the process without an `idle` close and without a graceful drain. Container stop, or cancel the loop in-process. Clients see a drop while they still have work to send.
+**C-warm (primary).** Revision deploy or process restart with the working set still live.
+
+1. Run the parent population until every open socket has persisted at least one heartbeat. Campaign uses B after the quiet orgs have parked. Fleet uses B with quiet orgs held on A-map.
+2. Kill the process without an `idle` close and without a graceful drain. Container stop, or cancel the loop in-process. Clients see a TCP close immediately.
 3. Start the process again.
-4. Reconnect the same population under `RECONNECT_DELAY`.
-5. `connect` awaits `_load_task` (`main.py:2307-2310`) while `_load_state` reads every org's recent zones, owners, and confirmations (`main.py:4326-4337`). On a warm restart that load is the live working set, and the clients are all trying to come back.
+4. Reconnect the sockets that were open, under `RECONNECT_DELAY`. Parked tablets stay parked.
+5. `connect` awaits `_load_task` (`main.py:2307-2310`) while `_load_state` reads every org's recent zones, owners, and confirmations (`main.py:4326-4337`).
 
-Run `uniform-0-5` and `burst` at every support-gate rung for the primary shape. Run both again at N = 10 and N = 20 for the 16-tablet upper bound.
+Support gate: `lockstep-2s` for campaign and fleet, primary shape, at N = 10 and N = 20, and `lockstep-2s` for the 16-tablet upper bound at those same rungs (campaign and fleet). `uniform-0-5` for the fleet population at N = 10 and N = 20, primary shape, as the jitter comparison.
 
-**C-cold (secondary).** Scale-from-zero. Stop after A-park (no sockets left), start the process, then connect the B population under the same two delay distributions. The database may still hold the rows from the earlier B run; that is the cold process with leftover coordination rows, which is what scale-from-zero looks like after a search. Field tablets will not actually arrive on this schedule. Keep the files, and do not score them as the support gate until reconnect timing is known.
+**C-android-ack (risk case, support gate, N = 10 and N = 20, campaign population, `lockstep-2s`).** After the herd connects, withhold `hello_ack` for more than 10 s. Android checks every 5 s and force-reconnects at 0 delay, and that path does not grow the backoff, so the Android tablets loop in lockstep. iOS stays on 2, 4, 8, 10. Android will also reset its backoff on each socket open, including an open that never produces `hello_ack`. Record reconnects per second and whether `hello_ack` latency for the iOS tablets stays inside the C-warm threshold. This case is a finding about the client, not a tracker flag.
 
-Record, for every C file: time from listen to each `hello_ack`, the delay each socket drew, sockets closed during the burst (codes 1008, 1013, 4000, and anything other than an intentional client close), and the first 2 minutes of steady traffic afterward.
+A blackhole that never resets TCP is not this run. Android would notice in about 10–20 s and iOS in up to about 25 s, and only then start the same backoff. Mention it in the result notes if a run is killed without a socket close.
 
-A-park's single-tablet follow-on stays: after the idle, start the process and connect one quiet tablet. That is the ordinary scale-from-zero tax. Record it at N = 10. It is not the stampede.
+**C-cold (secondary).** Scale-from-zero. Stop after A-idle (no sockets left), start the process, then bring the hot tablets back under `lockstep-2s` and, separately, under `uniform-0-5`. The database may still hold rows from the earlier run. Parked quiet tablets reconnect only when the scenario gives them a sighting. Record these files and do not score them as the support gate.
+
+Record, for every C file: time from listen to each `hello_ack`, the delay each socket used, sockets closed during the herd (codes 1008, 1013, 4000, and anything other than an intentional client close), and the first 2 minutes of steady traffic afterward.
+
+The single-tablet follow-on stays: after A-idle, start the process and connect one quiet tablet, as a first connect (immediate, no 2 s backoff). That is the ordinary scale-from-zero tax. Record it at N = 10. It is not the stampede.
 
 ## Metrics
 
@@ -245,7 +282,7 @@ Collect per rung, per scenario, and for B also split **hot orgs** vs **quiet org
 | Error rate | HTTP responses ≥ 500, unexpected 4xx, websocket closes other than the scenario's own idle close, and `WebSocketWriter` 1013 retires. Split by org and route. |
 | Drop counts | 1013 retires, 4000 silence timeouts, failed `broadcast` recipient counts from the server log line `broadcast retired`, and failed `live-status` polls. There is no long-lived SSE stream to drop. |
 
-Write one JSON file per (mode, N, scenario, and for B and C the hot shape and `RECONNECT_DELAY`) plus a one-page table. Store the git SHA, the flag set (empty on the baseline), `HOT_ZONES`, `DRONES_PER_ZONE`, `RECONNECT_DELAY`, and `owner_sighting_rate: "TODO"` until that rate is filled in.
+Write one JSON file per (mode, N, scenario, hot shape, platform mix, and `RECONNECT_DELAY`) plus a one-page table. Store the git SHA, the flag set (empty on the baseline), `HOT_ZONES`, `DRONES_PER_ZONE`, `RECONNECT_DELAY`, and `client: "RID2Caltopo 2.5.8 0eac4703"`. A BTRX file says so in the name.
 
 ## Proposed pass/fail thresholds
 
@@ -255,28 +292,30 @@ Support gate is N = 10 and N = 20, container mode, flags off, unless the row say
 
 | Check | Proposal |
 | --- | --- |
-| A2 `heartbeat_ack` | p50 < 50 ms, p95 < 200 ms, p99 < 500 ms |
-| B quiet-org `heartbeat_ack`, including during the 10 s weather stall | p50 < 50 ms, p95 < 250 ms, p99 < 500 ms |
+| A-map `heartbeat_ack` | p50 < 50 ms, p95 < 200 ms, p99 < 500 ms |
+| A-map quiet tablets during B, including the 10 s weather stall | p50 < 50 ms, p95 < 250 ms, p99 < 500 ms |
 | B hot-org `heartbeat_ack` | p95 < 500 ms, p99 < 1000 ms |
 | B hot-org `peer_traffic_position` delivery and `relay_sighting` delivery | p95 < 500 ms, p99 < 1000 ms |
 | `PUT` upload, weather stub < 100 ms, 2 MiB, local disk | p95 < 3 s. This will not hold once weather or FUSE is slow; that case is judged by the quiet-org heartbeat row, not by the upload row. |
 | `GET /faa/notams` cache hit | p95 < 100 ms |
 | `GET /livez` during B | p99 < 100 ms, no 5xx |
-| Event-loop lag, in-process, A2 | p99 excess < 50 ms |
+| Event-loop lag, in-process, A-map | p99 excess < 50 ms |
 | Event-loop lag, in-process, B steady | p99 excess < 100 ms |
 | Event-loop lag during the 10 s weather stall | p99 excess < 100 ms. A miss here means the worker handoff is still stalling the loop, which is a stronger finding than "the upload is slow". |
-| Hub lock wait, in-process, A2 | p99 < 20 ms |
+| Hub lock wait, in-process, A-map | p99 < 20 ms |
 | Hub lock wait, in-process, B | p99 < 100 ms. Quiet-org waits over 100 ms while only the hot orgs are inside the lock are the signal for per-org sharding. |
 | Pool checkout | no timeout; checked out stays ≤ pool size + max overflow (defaults 5 + 10 on each engine, plus the one LISTEN connection on the control plane). Checkout wait p99 < 50 ms on the support gate. |
 | Memory, container, B at N = 20 | RSS growth over the measured 5 minutes < 50 MiB, and peak RSS < 70% of 1 GiB |
 | Submission-lock map | size 0 within 5 s after the last in-flight upload, at every rung |
-| Error rate | HTTP 5xx < 0.1% of responses. Abnormal websocket closes = 0 on the support gate. 1013 retires = 0 unless the harness injected a stalled reader. |
+| Error rate | HTTP 5xx < 0.1% of responses. iOS abnormal websocket closes = 0 on the support gate. 1013 retires = 0 unless the harness injected a stalled reader. Android flying code-4000 closes are recorded on their own and are not an automatic fail while the 45–60 s heartbeat sits on the 60 s text timeout. |
 | Cross-org message | 0 at every rung |
-| A-park | zero coordination sockets after the idle closes, at N = 10 and N = 20 |
-| C-warm, primary shape, both `uniform-0-5` and `burst`, `hello_ack` | p95 < 2 s, p99 < 5 s from the moment the process is listening. Zero 1013 during the burst. This is the scenario C support gate. |
-| C-warm, 16-tablet upper bound, N = 10 and N = 20 | same numbers, filed as the upper bound. A miss here does not fail the 6-tablet gate. |
-| C-cold, either delay | record only. Client timing is unknown. No pass/fail until that schedule exists. |
-| C, single tablet after A-park | record only. No threshold until the first baseline exists. |
+| A-idle | zero coordination sockets after the idle closes, and again after the A-churn wave closes, at N = 10 and N = 20 |
+| C-warm `lockstep-2s`, campaign and fleet, primary shape, `hello_ack` | p95 < 2 s, p99 < 5 s from the moment the process is listening. Zero 1013 during the herd. This is the scenario C support gate. |
+| C-warm `lockstep-2s`, 16-tablet upper bound, N = 10 and N = 20 | same numbers, filed as the upper bound. A miss here does not fail the 6-tablet gate. |
+| C-warm `uniform-0-5` | comparison only, the with-jitter picture. Same numbers, not the 2.5.8 client. |
+| C-android-ack | record the Android reconnect loop. iOS `hello_ack` still meets the C-warm row. A loop that stays at 0 delay is the client-jitter finding below. |
+| C-cold | record only. |
+| C, single tablet after A-idle | record only. No threshold until the first baseline exists. |
 
 N = 40, 80, and 160 use the same table as a **recording grid**, not as a fail of the service. Write "above support gate" next to any miss so it cannot be quoted as a production SLO.
 
@@ -318,20 +357,26 @@ Container mode still records client latency, docker RSS, Postgres activity, and 
 
 ## Order
 
-1. Flags-off container baseline at N = 10 and N = 20 for A2, A-park, B primary, B upper bound, C-warm primary (both delay distributions), and C-warm upper bound (both delay distributions), plus B0. Record C-cold on those rungs without scoring it.
+1. Flags-off container baseline at N = 10 and N = 20 for A-idle, A-churn, A-map, B primary, B upper bound, C-warm `lockstep-2s` (campaign and fleet, primary and upper bound), C-warm `uniform-0-5` (fleet, primary shape), and C-android-ack, plus B0 and the NOTAM-error retry. Record C-cold on those rungs without scoring it.
 2. Flags-off in-process baseline for the same support-gate set, for lock, lag, and pool.
-3. Characterization rungs, container, flags off, primary hot shape only. Stop early only if the process is OOM-killed; record that as the characterization result.
+3. Characterization rungs, container, flags off, primary hot shape: A-idle, A-map, B, and C-warm `lockstep-2s` for the fleet population. Stop early only if the process is OOM-killed; record that as the characterization result.
 4. Then, and only then, one flag at a time on the support gate, aimed at whichever row actually missed.
 
 Campaign mode (`min-instances=1`, CPU always allocated) is not a substitute for step 1 and is not a harness result. See [CAMPAIGN_MODE_CHECKLIST.md](CAMPAIGN_MODE_CHECKLIST.md).
 
-## Decisions (Ken, 2026-11-14)
+## Recommendation: jitter client reconnect (RID2Caltopo, not this repo)
 
-- A hot org is 3–4 zones, 2–4 drones per zone, one tablet per drone (about 6–16 tablets). Scenario B primary is 3 × 2 = 6. The parameterized upper bound is 4 × 4 = 16.
-- Clues go only to CalTopo. Tracker has no clue workload.
-- Warm restart with clients already connected is the primary reconnect stampede (scenario C-warm). Cold start is secondary. Reconnect delay stays parameterized as `uniform-0-5` and `burst` until the client schedule is known.
+2.5.8 reconnects on 2, 4, 8, 10, 10… seconds with no jitter, so a tracker restart returns every open tablet together at about +2 s, and a failed attempt returns them together again at +4 s, +8 s, and then every 10 s. Android's missing-ack path is tighter: after 10 s with no ack it reconnects at 0 delay and does not grow the backoff, and it clears the backoff on socket open even when `hello_ack` never arrives. iOS clears the backoff only on `hello_ack`, so a slow tracker keeps iOS on the ladder.
+
+Jitter on that backoff is a small RID2Caltopo change and the highest-leverage fix for this herd. It does not belong in r2c-tracker, and it is not a reason to shard the hub lock or raise `max-instances`. The shape to take to the app team: draw each step from a range (0 through the step, or the step through twice the step), keep the 10 s cap, and apply the same jitter to the Android 0-delay ack-timeout reconnect so that path cannot stay at 0. The harness file `uniform-0-5` is the with-jitter picture of the same stampede. Compare it to `lockstep-2s` before spending tracker complexity on the herd.
+
+## Decisions
+
+- Ken, 2026-11-14: a hot org is 3–4 zones, 2–4 drones per zone, one tablet per drone (about 6–16 tablets). Scenario B primary is 3 × 2 = 6. The parameterized upper bound is 4 × 4 = 16.
+- Ken, 2026-11-14: clues go only to CalTopo. Tracker has no clue workload.
+- Ken, 2026-11-14: a warm restart with clients already connected is the primary reconnect case. Cold start is secondary.
+- RID2Caltopo 2.5.8 (`0eac4703`): owner traffic is about 1 `sighting` + 1 `traffic_position` per second per flying drone. Heartbeats, idle park, NOTAMs, and reconnect are the client section above. The restart herd is lockstep at about +2 s. `uniform-0-5` is a jitter comparison, not the shipped client.
 
 ## TODO
 
-1. **Owner sighting rate.** Not in this repo, and not yet confirmed. The harness uses 1 / s / owned drone as a placeholder and labels it `TODO` on every result. Non-owner relays stay at the documented 1 per 3 s. When Ken has a number, replace the placeholder in the scenario B table and re-run the support gate. Do not quietly retune earlier files.
-2. **Live Cloud Run CPU and concurrency.** `deploy.sh` passes neither `--cpu` nor `--concurrency`. The harness mirrors 1 vCPU and leaves concurrency uncapped, which matches Cloud Run's documented default of 80 only if the live service was never changed. File `gcloud run services describe r2c-tracker-pilot --project=r2c-tracker-pilot --region=us-west1` before quoting a container run as a production twin. Memory is set to 1 GiB by `deploy_pilot.sh` and is not part of this TODO.
+**Live Cloud Run CPU and concurrency.** `deploy.sh` passes neither `--cpu` nor `--concurrency`. The harness mirrors 1 vCPU and leaves concurrency uncapped, which matches Cloud Run's documented default of 80 only if the live service was never changed. File `gcloud run services describe r2c-tracker-pilot --project=r2c-tracker-pilot --region=us-west1` before quoting a container run as a production twin. Memory is set to 1 GiB by `deploy_pilot.sh` and is not part of this TODO.
