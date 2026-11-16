@@ -12,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass, replace
@@ -28,6 +29,39 @@ def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+_CGROUP = Path("/sys/fs/cgroup/r2c-loadtest")
+
+
+def _sudo_write(path: Path, text: str) -> None:
+    subprocess.run(
+        ["sudo", "tee", str(path)],
+        input=text.encode(),
+        stdout=subprocess.DEVNULL,
+        check=True,
+    )
+
+
+def _enforce_envelope(pid: int) -> bool:
+    """Hard 1 GiB memory cap and one CPU quota. Local cgroup only."""
+    subprocess.run(["sudo", "mkdir", "-p", str(_CGROUP)], check=True)
+    _sudo_write(_CGROUP / "memory.max", "1073741824\n")
+    _sudo_write(_CGROUP / "memory.swap.max", "0\n")
+    _sudo_write(_CGROUP / "cpu.max", "100000 100000\n")
+    _sudo_write(_CGROUP / "cgroup.procs", f"{pid}\n")
+    members = (_CGROUP / "cgroup.procs").read_text().split()
+    return str(pid) in members
+
+
+def _oom_kills() -> int:
+    try:
+        for line in (_CGROUP / "memory.events").read_text().splitlines():
+            if line.startswith("oom_kill "):
+                return int(line.split()[1])
+    except (OSError, IndexError, ValueError):
+        return 0
+    return 0
 
 
 def _pg_bin() -> Optional[Path]:
@@ -130,6 +164,7 @@ class TrackerProcess:
         if self.hello_delay_ms > 0:
             env["R2C_LOADTEST_DELAY_HELLO_ACK_MS"] = str(self.hello_delay_ms)
         log = self.log_path.open("ab")
+        self.launched_at = time.perf_counter()
         self.process = subprocess.Popen(
             [sys.executable, "-m", "loadtest.serve_app"],
             cwd=str(ROOT),
@@ -139,6 +174,10 @@ class TrackerProcess:
             start_new_session=True,
         )
         log.close()
+        self.memory_limited = _enforce_envelope(self.process.pid)
+        if not self.memory_limited:
+            raise RuntimeError("Tracker process was not placed in the 1 GiB cgroup.")
+        self.oom_kills_at_start = _oom_kills()
         try:
             os.sched_setaffinity(self.process.pid, {0})
             self.cpu_pinned = True
@@ -193,7 +232,7 @@ class TrackerProcess:
         except OSError:
             return ""
 
-    def instrument(self) -> dict:
+    def load_instrument(self) -> dict:
         try:
             return json.loads(self.metrics_path.read_text())
         except (OSError, json.JSONDecodeError):
@@ -326,15 +365,73 @@ class RunConfig:
     upload: bool
     backend: str
     instrument: bool
+    cold_start: bool = False
+
+
+class ResourceSampler:
+    def __init__(self, server: TrackerProcess):
+        self.server = server
+        self.peak_rss_mb = 0.0
+        self.cpu_percent: Optional[float] = None
+        self.ignore_exit = False
+        self._samples: list[tuple[float, Optional[float]]] = []
+        self._stop = False
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, name="r2c-rss", daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop:
+            rss = self.server.rss_mb()
+            cpu = self.server.cpu_seconds()
+            if rss:
+                self.peak_rss_mb = max(self.peak_rss_mb, rss)
+            self._samples.append((time.perf_counter(), cpu))
+            process = self.server.process
+            if (
+                not self.ignore_exit
+                and process is not None
+                and process.poll() is not None
+            ):
+                break
+            time.sleep(1.0)
+
+    def stop(self) -> None:
+        self._stop = True
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+        points = [(stamp, cpu) for stamp, cpu in self._samples if cpu is not None]
+        if len(points) >= 2 and points[-1][0] > points[0][0] and points[-1][1] >= points[0][1]:
+            self.cpu_percent = round(
+                100.0 * (points[-1][1] - points[0][1]) / (points[-1][0] - points[0][0]),
+                1,
+            )
+
+    def reset_cpu_window(self) -> None:
+        self._samples.clear()
+
+
+def _lock_blocks(instrument: dict) -> dict:
+    waits = instrument.get("lock_wait_s") or {}
+    if isinstance(waits, list):
+        waits = {"hub": waits}
+    return {
+        kind: latency_block(waits.get(kind) or [])
+        for kind in ("hub", "submission", "submission_guard", "other")
+    }
 
 
 def summarize(config: RunConfig, tablets: list[Tablet], server: TrackerProcess, elapsed_s: float,
               notes: list[str]) -> dict:
     stats = [tablet.stats for tablet in tablets]
-    instrument = server.instrument() if config.instrument else {}
-    lock_waits = instrument.get("lock_wait_s") or []
+    instrument = server.load_instrument() if config.instrument else {}
     lags = instrument.get("event_loop_lag_s") or []
-    rss = server.rss_mb()
+    rss = getattr(server, "peak_rss_mb", None)
+    if rss is None:
+        rss = server.rss_mb()
+    launch = [sample for item in stats for sample in item.launch_to_hello_s]
     return {
         "scenario": config.name,
         "backend": config.backend,
@@ -346,7 +443,11 @@ def summarize(config: RunConfig, tablets: list[Tablet], server: TrackerProcess, 
         "duration_s": round(elapsed_s, 3),
         "concurrency_limit": config.concurrency,
         "cpu_pinned_to_one_core": getattr(server, "cpu_pinned", False),
+        "memory_limit": "1GiB" if getattr(server, "memory_limited", False) else None,
+        "oom": bool(getattr(server, "oom", False)),
+        "cpu_percent_of_one_core": getattr(server, "cpu_percent", None),
         "server_rss_mb": None if rss is None else round(rss, 1),
+        "launch_to_first_hello_s": None if not launch else round(min(launch), 3),
         "connects": sum(item.connects for item in stats),
         "connect_failures": sum(item.connect_failures for item in stats),
         "hello_acks": sum(item.hello_acks for item in stats),
@@ -363,7 +464,7 @@ def summarize(config: RunConfig, tablets: list[Tablet], server: TrackerProcess, 
         "queue_wait": latency_block(tablets[0].admission.queue_waits_s if tablets else []),
         "admission_rejected": tablets[0].admission.rejected if tablets else 0,
         "event_loop_lag": latency_block(lags) if config.instrument else None,
-        "lock_wait": latency_block(lock_waits) if config.instrument else None,
+        "lock_wait": _lock_blocks(instrument) if config.instrument else None,
         "notes": notes,
     }
 
@@ -374,7 +475,7 @@ async def execute(config: RunConfig, directory: Path) -> dict:
     server = TrackerProcess(database, directory, config.instrument, config.hello_delay_ms)
     notes = [
         "Weather is stubbed. FAA credentials are absent, so NOTAM fetches fail closed and clients retry every 15 s.",
-        "Memory is sampled from VmRSS. This host did not apply a 1 GiB cgroup cap.",
+        "The tracker process is in cgroup r2c-loadtest: memory.max=1GiB, swap max=0, cpu.max=1.",
     ]
     try:
         organizations = _orgs(config.orgs, config.hot_orgs, config.tablets_per_hot, config.profile)
@@ -383,6 +484,8 @@ async def execute(config: RunConfig, directory: Path) -> dict:
             organizations, tokens, config.zones, config.drones_per_zone, config.upload,
         )
         server.start()
+        sampler = ResourceSampler(server)
+        sampler.start()
         notes.append(
             "Server CPU was pinned to one core."
             if server.cpu_pinned
@@ -396,6 +499,8 @@ async def execute(config: RunConfig, directory: Path) -> dict:
             )
         phase = Phase()
         phase.listen_at = time.perf_counter()
+        if config.cold_start:
+            phase.launch_at = server.launched_at
         admission = Admission(config.concurrency)
         tablets = [
             Tablet(spec, server.base_url, admission, phase, config.reconnect, upload)
@@ -406,15 +511,33 @@ async def execute(config: RunConfig, directory: Path) -> dict:
         if config.restart:
             await _wait_for_acks(tablets, min(12.0, config.duration_s))
             phase.generation += 1
+            sampler.ignore_exit = True
             server.stop()
             await asyncio.sleep(0.3)
             server.start()
+            sampler.ignore_exit = False
+            sampler.reset_cpu_window()
             phase.listen_at = time.perf_counter()
         remaining = config.duration_s - (time.perf_counter() - started)
+        alive = True
         if remaining > 0:
-            await asyncio.sleep(remaining)
+            deadline = time.monotonic() + remaining
+            while time.monotonic() < deadline:
+                process = server.process
+                if process is not None and process.poll() is not None:
+                    alive = False
+                    notes.append(f"Tracker exited during the run with code {process.returncode}.")
+                    break
+                await asyncio.sleep(min(1.0, deadline - time.monotonic()))
         phase.stop.set()
         await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=20)
+        sampler.stop()
+        server.peak_rss_mb = sampler.peak_rss_mb or server.rss_mb()
+        server.cpu_percent = sampler.cpu_percent
+        oom_delta = _oom_kills() - server.oom_kills_at_start
+        server.oom = oom_delta > 0 or not alive
+        if server.oom:
+            notes.append(f"OOM kill events during this run: {oom_delta}.")
         elapsed = time.perf_counter() - started
         result = summarize(config, tablets, server, elapsed, notes)
         result["open_sockets_planned"] = len(tablets)

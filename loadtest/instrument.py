@@ -12,10 +12,31 @@ import os
 import threading
 import time
 
-_waits: list[float] = []
+_waits: dict[str, list[float]] = {
+    "hub": [],
+    "submission": [],
+    "submission_guard": [],
+    "other": [],
+}
 _lags: list[float] = []
 _guard = threading.Lock()
 _installed = False
+_MAX_SAMPLES = 200_000
+
+
+def _classify_lock() -> str:
+    """Tag the waiter from the nearest caller. The hub class is not imported here."""
+    import traceback
+
+    for frame in reversed(traceback.extract_stack(limit=16)):
+        line = frame.line or ""
+        if frame.name == "serialized_flight_submission":
+            if "guard" in line:
+                return "submission_guard"
+            return "submission"
+        if "self._lock" in line:
+            return "hub"
+    return "other"
 
 
 class TimingLock(asyncio.Lock):
@@ -23,9 +44,11 @@ class TimingLock(asyncio.Lock):
         started = time.perf_counter()
         acquired = await super().acquire()
         elapsed = time.perf_counter() - started
+        kind = _classify_lock()
         with _guard:
-            if len(_waits) < 200_000:
-                _waits.append(elapsed)
+            bucket = _waits[kind]
+            if len(bucket) < _MAX_SAMPLES:
+                bucket.append(elapsed)
         return acquired
 
 
@@ -39,7 +62,12 @@ def install_lock_timing() -> None:
 
 def snapshot() -> dict:
     with _guard:
-        return {"lock_wait_s": list(_waits), "event_loop_lag_s": list(_lags)}
+        return {
+            "lock_wait_s": {
+                kind: list(samples) for kind, samples in _waits.items()
+            },
+            "event_loop_lag_s": list(_lags),
+        }
 
 
 def _write(payload: dict) -> None:
@@ -53,13 +81,17 @@ def _write(payload: dict) -> None:
 async def start_lag_probe() -> asyncio.Task:
     async def probe():
         try:
+            next_flush = time.monotonic() + 5.0
             while True:
                 started = time.perf_counter()
                 await asyncio.sleep(0.05)
                 excess = time.perf_counter() - started - 0.05
                 with _guard:
-                    if len(_lags) < 200_000:
+                    if len(_lags) < _MAX_SAMPLES:
                         _lags.append(max(0.0, excess))
+                if time.monotonic() >= next_flush:
+                    _write(snapshot())
+                    next_flush = time.monotonic() + 5.0
         except asyncio.CancelledError:
             _write(snapshot())
             raise

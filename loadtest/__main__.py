@@ -86,9 +86,59 @@ def baseline(date: str, out: Path, backend: str, instrument: bool) -> None:
     print(f"wrote {out}", flush=True)
 
 
+def full(date: str, backend: str) -> None:
+    """Spec steady window: 60 s warmup plus 5 measured minutes."""
+    out_dir = ROOT / "docs" / "load-test-results" / f"full-{date}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    steady = 360.0
+    jobs = []
+    for orgs in (10, 20, 40, 80, 160):
+        jobs.append(config_for(
+            "A", orgs=orgs, duration_s=steady, backend=backend, instrument=True, name=f"A-{orgs}",
+        ))
+    jobs.append(config_for(
+        "B", orgs=10, tablets_per_hot=6, duration_s=steady, backend=backend,
+        instrument=True, name="B-6",
+    ))
+    jobs.append(config_for(
+        "B", orgs=10, tablets_per_hot=16, duration_s=steady, backend=backend,
+        instrument=True, name="B-16",
+    ))
+    jobs.append(config_for(
+        "C", orgs=10, tablets_per_hot=16, reconnect="lockstep", duration_s=steady,
+        backend=backend, instrument=True, name="C-lockstep-16",
+    ))
+    jobs.append(config_for(
+        "C", orgs=10, tablets_per_hot=16, reconnect="jitter", duration_s=steady,
+        backend=backend, instrument=True, name="C-jitter-16",
+    ))
+    jobs.append(config_for(
+        "C-android-ack", orgs=10, tablets_per_hot=16, duration_s=300.0,
+        backend=backend, instrument=True, name="C-android-ack-16",
+    ))
+    for trial in (1, 2, 3):
+        jobs.append(config_for(
+            "B", orgs=10, tablets_per_hot=16, duration_s=60.0, backend=backend,
+            instrument=True, cold_start=True, name=f"cold-{trial}",
+        ))
+    for config in jobs:
+        target = out_dir / f"{config.name}.json"
+        if target.exists():
+            print(f"skip existing {target.name}", flush=True)
+            continue
+        try:
+            with tempfile.TemporaryDirectory(prefix=f"r2c-{config.name}-") as scratch:
+                result = _run(config, Path(scratch))
+        except Exception as exc:
+            result = {"scenario": config.name, "error": str(exc), "oom": True}
+            print(f"FAILED {config.name}: {exc}", flush=True)
+        target.write_text(json.dumps(result, indent=2) + "\n")
+        print(f"wrote {target}", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Local r2c-tracker load harness")
-    parser.add_argument("scenario", choices=["smoke", "A", "B", "C", "C-android-ack", "baseline"])
+    parser.add_argument("scenario", choices=["smoke", "A", "B", "C", "C-android-ack", "baseline", "full"])
     parser.add_argument("--orgs", type=int)
     parser.add_argument("--tablets", type=int, dest="tablets_per_hot")
     parser.add_argument("--reconnect", choices=["lockstep", "jitter"])
@@ -99,6 +149,9 @@ def main() -> None:
     parser.add_argument("--out", type=Path)
     parser.add_argument("--date", default="2026-11-16")
     args = parser.parse_args()
+    if args.scenario == "full":
+        full(args.date, args.backend or "postgres")
+        return
     if args.scenario == "baseline":
         backend = args.backend or "postgres"
         out = args.out or (ROOT / "docs" / "load-test-results" / f"baseline-{args.date}.md")

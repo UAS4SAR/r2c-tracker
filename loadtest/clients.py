@@ -43,6 +43,7 @@ class TabletStats:
     upload_s: list[float] = field(default_factory=list)
     reconnect_from_close_s: list[float] = field(default_factory=list)
     reconnect_from_listen_s: list[float] = field(default_factory=list)
+    launch_to_hello_s: list[float] = field(default_factory=list)
     notam_status: list[int] = field(default_factory=list)
 
 
@@ -84,6 +85,7 @@ class Phase:
     def __init__(self):
         self.generation = 0
         self.listen_at: Optional[float] = None
+        self.launch_at: Optional[float] = None
         self.stop = asyncio.Event()
 
 
@@ -226,6 +228,8 @@ class Tablet:
                         self.stats.hello_ack_s.append(now_p - hello_sent)
                         if spec.platform == "ios":
                             self._step = 0
+                        if self.phase.launch_at and not self.stats.launch_to_hello_s:
+                            self.stats.launch_to_hello_s.append(now_p - self.phase.launch_at)
                         if generation > 0 and self.phase.listen_at:
                             self.stats.reconnect_from_listen_s.append(now_p - self.phase.listen_at)
                         closed_at = getattr(self, "_closed_at", None)

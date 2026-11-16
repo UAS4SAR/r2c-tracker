@@ -1283,7 +1283,7 @@ async def lifespan(app: FastAPI):
     if os.environ.get("R2C_LOADTEST_INSTRUMENT", "").strip() == "1":
         from loadtest.instrument import start_lag_probe
 
-        lag_probe = start_lag_probe()
+        lag_probe = await start_lag_probe()
     await r2c_hub.start()
     yield
     # Shutdown Clean up resources (if needed)

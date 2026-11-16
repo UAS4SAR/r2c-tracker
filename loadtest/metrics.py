@@ -27,6 +27,7 @@ def latency_block(samples_s: list[float]) -> dict:
         "p50_ms": _ms(percentile(samples_s, 0.50)),
         "p95_ms": _ms(percentile(samples_s, 0.95)),
         "p99_ms": _ms(percentile(samples_s, 0.99)),
+        "max_ms": _ms(max(samples_s) if samples_s else None),
     }
 
 
