@@ -30,21 +30,23 @@ Campaign mode, on the production service only:
 | Min instances | 0 | 1 | 0 |
 | CPU throttling | on | off (CPU always allocated) | on |
 | Max instances | 1 | **1, unchanged** | 1 |
-| CPU / memory / concurrency | whatever is live | unchanged | unchanged |
+| CPU / memory / concurrency / timeout | 1 vCPU, 1 GiB, 80, 3600s | unchanged | unchanged |
+| Startup CPU boost | on | unchanged | unchanged |
 
-`deploy.sh` does not pass `--cpu` or `--concurrency`. `deploy_pilot.sh` sets memory to `1Gi`. Do not "tidy" CPU, memory, or concurrency while enabling campaign mode. Record them and leave them.
+Live describe on 2026-11-16, revision `r2c-tracker-pilot-00232-soz`: CPU `1000m`, memory `1Gi`, container concurrency 80, request timeout 3600s, `maxScale` 1, no `minScale` annotation (min instances 0), `cpu-throttling` true, `startup-cpu-boost` true, gen2, startup probe timeout 5 s. Direct VPC egress is network `r2c-pilot-vpc`, subnet `r2c-pilot-us-west1`, egress `private-ranges-only`. There is no Cloud SQL connector annotation. The runtime service account is `r2c-tracker-runtime@r2c-tracker-pilot.iam.gserviceaccount.com`. Do not tidy any of those while enabling campaign mode.
 
-Production identity, from `deploy_pilot.sh` and `docs/releases/v1.4.98.md`:
+Production identity:
 
 | Item | Value |
 | --- | --- |
 | gcloud configuration | `r2c-tracker-pilot` |
-| Project | `r2c-tracker-pilot` |
+| Cloud Run project | `r2c-tracker-pilot` |
 | Region | `us-west1` |
-| Service | `r2c-tracker-pilot` |
+| Service this checklist changes | `r2c-tracker-pilot` |
+| Other services in that project and region | `r2c-tracker-prerel`, `r2c-tracker`. Leave both alone. |
 | Public checks | `https://r2c-tracker.com/livez` and `/readyz` |
 
-`r2c-tracker-prerel` is not this checklist. Do not set min-instances on prerel as part of a production incident.
+The Cloud Run project is `r2c-tracker-pilot`. It is not `r2c-tracker-platform`. Every `gcloud run` and `gcloud billing` command below passes `--project=r2c-tracker-pilot`. The three `gcloud config` commands in section 0 only check that the active configuration is already that project.
 
 ## Hard rules
 
@@ -78,10 +80,12 @@ gcloud run services describe r2c-tracker-pilot \
 Write down, with a UTC timestamp:
 
 - Serving revision name (the one at 100% traffic) and its image digest.
-- `autoscaling.knative.dev/minScale` (expect `0`).
+- `autoscaling.knative.dev/minScale`. On 2026-11-16 the annotation was absent, which is min instances 0. An explicit `0` is the same steady state.
 - `autoscaling.knative.dev/maxScale` (expect `1`).
-- `run.googleapis.com/cpu-throttling` (expect `true` while `deploy.sh` is the source of the template).
-- CPU, memory, and container concurrency.
+- `run.googleapis.com/cpu-throttling` (expect `true`).
+- `run.googleapis.com/startup-cpu-boost` (expect `true`).
+- CPU `1000m`, memory `1Gi`, container concurrency 80, request timeout 3600s.
+- Direct VPC egress still `r2c-pilot-vpc` / `r2c-pilot-us-west1` / `private-ranges-only`, and still no Cloud SQL connector annotation.
 - `TRACKER` version from the health check below.
 
 If `maxScale` is anything other than `1`, stop. Do not continue this checklist, and do not raise it.
@@ -101,12 +105,13 @@ Do this in the same sitting as the enable, before the `services update`.
 
 ```sh
 gcloud billing projects describe r2c-tracker-pilot \
+  --project=r2c-tracker-pilot \
   --format='yaml(billingAccountName,billingEnabled)'
 ```
 
 `docs/UAS4SAR_CLOUD_OWNERSHIP_MIGRATION.md` recorded billing account `01B1DE-5A235D-3DA7F7` for this project. If `describe` returns a different account, record the command's answer and use that account for the rest of the snapshot. Do not "fix" the link as part of campaign mode.
 
-Also note project `r2c-tracker-platform` (the export project in `deploy_pilot.sh`) and `shaped-splicer-482602-v1` only if their costs move when this Cloud Run service stays warm. The service you are changing is `r2c-tracker-pilot`.
+The service you are changing is `r2c-tracker-pilot` in project `r2c-tracker-pilot`. Note `shaped-splicer-482602-v1` only if its costs move when this Cloud Run service stays warm.
 
 ### 2b. Console
 
@@ -121,13 +126,13 @@ Cloud Run → service `r2c-tracker-pilot` → Metrics, same project and region: 
 
 ### 2c. BigQuery export, if the table is there
 
-`deploy_pilot.sh` sets `PLATFORM_BILLING_SOURCE=bigquery`, project `r2c-tracker-platform`, dataset `r2c_billing_export`. The app looks for tables prefixed `gcp_billing_export_resource_v1_` or `gcp_billing_export_v1_` (`platform_admin.py`). List them; do not guess the billing-account suffix:
+**Verify project** before querying. `deploy_pilot.sh` records the export as `r2c-tracker-platform.r2c_billing_export`. That is a recorded path, not a confirmation that the dataset still lives in `r2c-tracker-platform`. The Cloud Run project is `r2c-tracker-pilot`. List the dataset in the project you confirm, and write that project next to the snapshot. The app looks for tables prefixed `gcp_billing_export_resource_v1_` or `gcp_billing_export_v1_` (`platform_admin.py`). Do not guess the billing-account suffix:
 
 ```sh
-bq ls --project_id=r2c-tracker-platform r2c_billing_export
+bq ls --project_id=EXPORT_PROJECT r2c_billing_export
 ```
 
-Prefer the `gcp_billing_export_resource_v1_` table when both exist. Then, with `TABLE` set to that name:
+`EXPORT_PROJECT` is the verified project. Prefer the `gcp_billing_export_resource_v1_` table when both exist. Then, with `TABLE` set to that name:
 
 ```sql
 SELECT
@@ -138,7 +143,7 @@ SELECT
   ROUND(SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) AS c), 0)), 6) AS credits,
   MIN(usage_start_time) AS usage_from,
   MAX(usage_end_time) AS usage_through
-FROM `r2c-tracker-platform.r2c_billing_export.TABLE`
+FROM `EXPORT_PROJECT.r2c_billing_export.TABLE`
 WHERE project.id = 'r2c-tracker-pilot'
   AND usage_start_time >= TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), MONTH)
 GROUP BY project_id, service, sku
@@ -164,7 +169,7 @@ gcloud run services update r2c-tracker-pilot \
   --no-cpu-throttling
 ```
 
-`--max-instances=1` is repeated on purpose so the update cannot leave the cap implicit. Do not add `--cpu`, `--memory`, `--concurrency`, or a new `--image`.
+`--max-instances=1` is repeated on purpose so the update cannot leave the cap implicit. Do not pass `--cpu`, `--memory`, `--concurrency`, `--timeout`, `--cpu-boost`, `--no-cpu-boost`, a network or Cloud SQL flag, a service account, or a new `--image`. The 2026-11-16 service is concurrency 80, timeout 3600s, startup CPU boost on, and direct VPC egress with no Cloud SQL connector annotation. Those stay.
 
 This updates the template and usually creates a new revision. Cloud Run will not send it traffic until the startup probe (`/livez`) passes. The probe's failure budget is 24 × 5 s.
 
@@ -185,6 +190,7 @@ Pass:
 - Exactly one revision has traffic, at 100%.
 - That revision's image digest equals the digest recorded in step 1.
 - `minScale` is `1`, `maxScale` is `1`, `cpu-throttling` is `false` (or the annotation is absent in the way `--no-cpu-throttling` writes it; the describe output is the record).
+- Startup CPU boost is still true, concurrency is still 80, timeout is still 3600s, VPC egress is unchanged, and there is still no Cloud SQL connector annotation.
 - `/livez` and `/readyz` return 200 with the same version as step 1.
 - Cloud Run metrics show instance count 1, not 2.
 
@@ -227,7 +233,8 @@ Pass:
 
 - One revision at 100% traffic.
 - Image digest still the step-1 digest, unless a normal release landed during the incident and you recorded that release on purpose.
-- `minScale` is `0`, `maxScale` is `1`, CPU throttling is back on.
+- Min instances are 0 again (`minScale` `0` or the annotation absent, which is how the 2026-11-16 service was described), `maxScale` is `1`, CPU throttling is back on.
+- Concurrency 80, timeout 3600s, startup CPU boost, VPC egress, and the absent Cloud SQL annotation match the pre-change describe.
 - `/livez` and `/readyz` are 200.
 - Instance count returns to 0 after the last tablet parks or disconnects. An instance that stays at 1 with throttling on and no sockets is a client that did not park, not a failed revert. Check for an open `/ws/r2c` before flipping min-instances again.
 
@@ -257,7 +264,7 @@ SELECT
   sku.description AS sku,
   ROUND(SUM(cost), 6) AS cost,
   ROUND(SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) AS c), 0)), 6) AS credits
-FROM `r2c-tracker-platform.r2c_billing_export.TABLE`
+FROM `EXPORT_PROJECT.r2c_billing_export.TABLE`
 WHERE project.id = 'r2c-tracker-pilot'
   AND usage_start_time >= TIMESTAMP('ENABLE_UTC')
   AND usage_start_time < TIMESTAMP('REVERT_UTC')
@@ -275,3 +282,4 @@ File the delta next to the before-snapshot: Cloud Run CPU and memory in particul
 - `max-instances` remains 1 until coordination state is not only inside this process.
 - Quiet orgs go back to scale-to-zero after the revert. The first 10–20 orgs are not a reason to leave min-instances at 1.
 - Upload caps, weather, the global lock, heartbeat batching, submission locks, and pool size are code, gated by the harness spec. They are not flags you flip with `gcloud run services update`.
+- Container concurrency stays 80. Raising it, or raising `max-instances`, waits on the harness record of behavior at and beyond 80 in-flight requests. See [LOAD_TEST_HARNESS_SPEC.md](LOAD_TEST_HARNESS_SPEC.md).

@@ -41,20 +41,30 @@ No product file needs to change for the first baseline. Probes that read the eve
 
 ## Runtime the harness must mirror
 
-Production, from `deploy_pilot.sh` wrapping `deploy.sh`, and from `docs/releases/v1.4.98.md`:
+Live production, read 2026-11-16 with `gcloud run services describe r2c-tracker-pilot --project=r2c-tracker-pilot --region=us-west1`. The Cloud Run project is `r2c-tracker-pilot`. It is not `r2c-tracker-platform`. The same project and region also contain `r2c-tracker-prerel` and `r2c-tracker`. The harness mirrors the pilot service only.
 
-| Setting | Source | Value to mirror |
-| --- | --- | --- |
-| Service | `deploy_pilot.sh`, release note | `r2c-tracker-pilot` in `r2c-tracker-pilot`, `us-west1` |
-| Min instances | `deploy.sh` `--min 0` | scale to zero when nothing is connected |
-| Max instances | `deploy.sh` `--max-instances 1` | one process |
-| CPU throttling | `deploy.sh` `--cpu-throttling` | CPU only while a request is active. An open `/ws/r2c` socket is a request, so heartbeats keep the CPU allocated. |
-| CPU | `deploy.sh` does not pass `--cpu` | **TODO.** Mirror 1 vCPU until a live `services describe` says otherwise. Do not treat the container number as a production twin until that describe is filed. |
-| Memory | `deploy_pilot.sh` `CLOUD_RUN_MEMORY=1Gi` | 1 GiB |
-| Concurrency | `deploy.sh` does not pass `--concurrency` | **TODO.** Cloud Run's documented default when the flag is omitted is 80. Record the live value before comparing runs. Do not invent a tighter cap in the harness to make a rung pass. |
-| Process model | `Dockerfile` `CMD` | one `uvicorn main:app`, no `--workers` |
-| Flight logs | `deploy.sh` gen2 GCS volume, `BASE_LOG_DIRECTORY` | `/flightlogs-vol` |
-| Databases | operational engine plus control plane | two PostgreSQL databases. SQLite is not an acceptable harness backend. |
+`deploy_pilot.sh` records the billing export as `r2c-tracker-platform.r2c_billing_export`. That project is **verify project**: confirm where the dataset actually lives before treating a query as the pilot's bill. See [CAMPAIGN_MODE_CHECKLIST.md](CAMPAIGN_MODE_CHECKLIST.md).
+
+| Setting | Live value on revision `r2c-tracker-pilot-00232-soz` |
+| --- | --- |
+| Project / region / service | `r2c-tracker-pilot` / `us-west1` / `r2c-tracker-pilot` |
+| Execution environment | gen2 |
+| CPU | `1000m` (1 vCPU) |
+| Memory | `1Gi` |
+| Container concurrency | 80 |
+| Request timeout | 3600s |
+| Max instances | `maxScale` 1 |
+| Min instances | no `minScale` annotation, which is min instances 0 |
+| CPU throttling | `true` |
+| Startup CPU boost | `true` |
+| Startup probe | custom, `timeoutSeconds` 5 (`/livez` in `deploy.sh`) |
+| VPC egress | direct VPC, network `r2c-pilot-vpc`, subnet `r2c-pilot-us-west1`, egress `private-ranges-only` |
+| Cloud SQL connector annotation | absent |
+| Runtime service account | `r2c-tracker-runtime@r2c-tracker-pilot.iam.gserviceaccount.com` |
+| Process model | `Dockerfile` `CMD`: one `uvicorn main:app`, no `--workers` |
+| Flight logs | `deploy.sh` gen2 GCS volume, `BASE_LOG_DIRECTORY` `/flightlogs-vol` |
+
+CPU throttling allocates CPU only while a request is active. An open `/ws/r2c` socket is a request, so heartbeats keep the CPU allocated. Databases for the harness are two local PostgreSQL instances. SQLite is not an acceptable backend. The local process does not attach the production VPC or the runtime service account.
 
 Local container limits for the support-gate run:
 
@@ -72,7 +82,30 @@ docker run --rm \
   harness-r2c-tracker
 ```
 
-`--cpus=1` matches the one vCPU the instance has while a request is active. **TODO:** confirm the live Cloud Run CPU and concurrency with `services describe` before treating this container as a production twin. `deploy.sh` omits both flags. Docker cannot freeze the event loop between requests the way Cloud Run CPU throttling does while the container stays up. Scenario A-idle plus scenario C-cold is the local stand-in for scale-from-zero. Scenario C-warm restarts the process while clients are still connected, which is the heavier reconnect. Do not describe a docker run as a CPU-throttling reproduction.
+`--cpus=1` and `--memory=1g` match the live `1000m` / `1Gi` service. Docker does not enforce Cloud Run's concurrency of 80, and it cannot freeze the event loop between requests the way CPU throttling does while the container stays up. Scenario A-idle plus scenario C-cold is the local stand-in for scale-from-zero. Scenario C-warm restarts the process while clients are still connected. Do not describe a docker run as a CPU-throttling or startup-CPU-boost reproduction.
+
+### Concurrency ceiling of 80
+
+With `maxScale` 1 and container concurrency 80, the whole site accepts 80 in-flight requests. Each long-lived WebSocket holds one of those slots until it closes, and the request timeout is 3600s, so a tablet that stays connected can occupy a slot for an hour. HTTP uploads, NOTAM fetches, and `live-status` polls use the same 80. A quiet tablet that has parked does not hold a slot.
+
+Count open sockets plus in-flight HTTP on every run and compare the sum to 80. Populations already in this spec:
+
+| Population | Open sockets | Against 80 |
+| --- | --- | --- |
+| B primary, quiet orgs parked | 18 hot | under |
+| B primary opening, N = 20, before the 30 s park | 52 | under |
+| B primary opening, N = 40 | 92 | over |
+| B upper bound, quiet orgs parked | 48 hot | under |
+| B upper bound opening, N = 20 | 82 | over |
+| C-warm campaign, primary / upper | 18 / 48 | under |
+| C-warm fleet, primary, N = 20 | 52 | under |
+| C-warm fleet, upper bound, N = 20 | 82 | over |
+| A-map, N = 40 | 80 | on the ceiling |
+| A-map or A-idle opening, N = 80 | 160 | over |
+
+The support gate for shapes that stay at or under 80 (B primary steady, C campaign, C fleet primary at N = 20, A-map at N = 20) records zero Cloud Run-style refusals. The harness also runs at the ceiling and past it: A-map at N = 40 (80 sockets), the B upper-bound opening at N = 20 (82), and A-map at N = 80 (160). Record queue delay and HTTP 429 there. Those overflows are a measurement. Raising concurrency, or raising `max-instances`, is a follow-up after that record. It is not part of the flags-off baseline. `max-instances` still stays 1 until coordination state leaves the process, even if 80 is the number that fails.
+
+Uvicorn will accept the 81st socket unless something in front of it stops admitting. For the support-gate twin, put a local limiter in front of the container that admits 80 concurrent requests and queues or rejects the rest the way this Cloud Run service does. Run the overflow populations through that limiter, and record a second file with admission left open so the process cost above 80 is visible separately from the 429s. Do not change the live service's concurrency to make either file pass.
 
 Use PostgreSQL 16 for both databases (the compose file in the repo is a stub and is not the harness). Apply the app's own startup migrations by booting the app. Point weather and FAA at local stubs. Bind `/flightlogs-vol` to a local directory for the baseline. Treat those upload latencies as a lower bound: production writes go through Cloud Storage FUSE. A later pass may mount a non-production bucket with gcsfuse; that pass is not required to record the first baseline, and it must not be the production flight-log bucket.
 
@@ -192,7 +225,7 @@ Ken, 2026-11-14: a hot org is **3–4 zones, 2–4 drones per zone, one tablet p
 
 **B primary (the support gate).** `HOT_ZONES=3`, `DRONES_PER_ZONE=2`. That is 6 tablets, each owning one drone, in three zones on one map. Three hot orgs are 18 sockets, and that is the measured window once the quiet orgs have parked. The opening connect is larger: at N = 20 the quiet tablets add 34 sockets for the first 30 s (52 total), and at N = 160 they add 314 (332 total), then those sockets close.
 
-**B upper bound (parameterized, required on N = 10 and N = 20).** `HOT_ZONES=4`, `DRONES_PER_ZONE=4`. That is 16 tablets and 16 drones per hot org, 48 hot sockets in the measured window. The opening connect at N = 20 is 48 + 34 = 82 sockets until the quiet orgs park. The harness must accept any pair in the allowed ranges, and the result JSON must record the pair. A miss at 16 tablets is the top of the range Ken described. It does not erase a pass at 6 tablets, and it is not a reason to raise `max-instances`.
+**B upper bound (parameterized, required on N = 10 and N = 20).** `HOT_ZONES=4`, `DRONES_PER_ZONE=4`. That is 16 tablets and 16 drones per hot org, 48 hot sockets in the measured window, under the live concurrency of 80. The opening connect at N = 20 is 48 + 34 = 82 sockets until the quiet orgs park, which is past 80. Record queue delay and 429s for that opening. The harness must accept any pair in the allowed ranges, and the result JSON must record the pair and the socket count against 80. A miss at 16 tablets is the top of the range Ken described. It does not erase a pass at 6 tablets, and it is not fixed by raising concurrency or `max-instances` in the baseline.
 
 Same-zone tablets see that zone's drones. Other zones of the hot org are more than a mile away, so they do not relay those drones and they do not receive that zone's `peer_traffic_position`. Leave `CROSS_ZONE_VISIBILITY` off unless a later edit of this spec turns it on.
 
@@ -239,7 +272,7 @@ Warm restart is the primary case: a new revision or an instance restart while so
 Two populations:
 
 - **Campaign.** Quiet orgs have already parked (A-idle). The open sockets are the hot tablets only: 18 at the primary shape, 48 at the 16-tablet upper bound. N still matters because `_load_state` reads every org.
-- **Fleet.** Quiet orgs are on A-map, so every tablet is connected. Primary shape at N = 20 is 18 + 34 = 52 sockets. At N = 160 it is 18 + 314 = 332. Upper bound at N = 20 is 48 + 34 = 82. This is the "all clients connected" restart.
+- **Fleet.** Quiet orgs are on A-map, so every tablet is connected. Primary shape at N = 20 is 18 + 34 = 52 sockets, under the concurrency ceiling. At N = 40 that sum is 92, and at N = 160 it is 332. Upper bound at N = 20 is 48 + 34 = 82, which is past 80. This is the "all clients connected" restart. The N = 20 upper-bound herd is one of the required at-and-beyond-80 measurements.
 
 `RECONNECT_DELAY`, each as its own result file:
 
@@ -279,7 +312,7 @@ Collect per rung, per scenario, and for B also split **hot orgs** vs **quiet org
 | Lock wait | In-process only. Probe wraps `asyncio.Lock.acquire` for the hub lock, the submission-lock guard, and each per-key submission lock. Report p50 / p95 / p99 wait, and the fraction of waits over 50 ms, tagged with which lock. |
 | DB connections / pool | In-process: `main.engine.pool.status()` and the control-plane engine's `pool.status()` sampled 1 / s. Record checked out, overflow, and checkout wait if the pool exposes it. Container: Postgres `pg_stat_activity` grouped by database and state. Include the LISTEN connection. |
 | Memory | Container: `docker stats` RSS max and RSS at the end of the 5 minutes minus RSS at the end of warmup. In-process: `VmRSS` from `/proc/self/status` on the same interval. Also sample `len(r2c_hub._connections)`, `len(r2c_hub._owners)`, and `len(main._flight_submission_locks)`. |
-| Error rate | HTTP responses ≥ 500, unexpected 4xx, websocket closes other than the scenario's own idle close, and `WebSocketWriter` 1013 retires. Split by org and route. |
+| Error rate | HTTP responses ≥ 500, HTTP 429, unexpected 4xx, websocket closes other than the scenario's own idle close, and `WebSocketWriter` 1013 retires. Split by org and route. Also record in-flight requests against the live concurrency of 80. |
 | Drop counts | 1013 retires, 4000 silence timeouts, failed `broadcast` recipient counts from the server log line `broadcast retired`, and failed `live-status` polls. There is no long-lived SSE stream to drop. |
 
 Write one JSON file per (mode, N, scenario, hot shape, platform mix, and `RECONNECT_DELAY`) plus a one-page table. Store the git SHA, the flag set (empty on the baseline), `HOT_ZONES`, `DRONES_PER_ZONE`, `RECONNECT_DELAY`, and `client: "RID2Caltopo 2.5.8 0eac4703"`. A BTRX file says so in the name.
@@ -307,7 +340,8 @@ Support gate is N = 10 and N = 20, container mode, flags off, unless the row say
 | Pool checkout | no timeout; checked out stays ≤ pool size + max overflow (defaults 5 + 10 on each engine, plus the one LISTEN connection on the control plane). Checkout wait p99 < 50 ms on the support gate. |
 | Memory, container, B at N = 20 | RSS growth over the measured 5 minutes < 50 MiB, and peak RSS < 70% of 1 GiB |
 | Submission-lock map | size 0 within 5 s after the last in-flight upload, at every rung |
-| Error rate | HTTP 5xx < 0.1% of responses. iOS abnormal websocket closes = 0 on the support gate. 1013 retires = 0 unless the harness injected a stalled reader. Android flying code-4000 closes are recorded on their own and are not an automatic fail while the 45–60 s heartbeat sits on the 60 s text timeout. |
+| Error rate | HTTP 5xx < 0.1% of responses. On populations at or under 80 in-flight requests, HTTP 429 = 0. iOS abnormal websocket closes = 0 on the support gate. 1013 retires = 0 unless the harness injected a stalled reader. Android flying code-4000 closes are recorded on their own and are not an automatic fail while the 45–60 s heartbeat sits on the 60 s text timeout. |
+| At and beyond 80 in-flight | A-map at N = 40, B upper-bound opening at N = 20, C-warm fleet upper bound at N = 20, and A-map at N = 80. Record queue delay and 429s. A 429 here is the concurrency measurement, not a baseline failure to be patched by raising the live cap. |
 | Cross-org message | 0 at every rung |
 | A-idle | zero coordination sockets after the idle closes, and again after the A-churn wave closes, at N = 10 and N = 20 |
 | C-warm `lockstep-2s`, campaign and fleet, primary shape, `hello_ack` | p95 < 2 s, p99 < 5 s from the moment the process is listening. Zero 1013 during the herd. This is the scenario C support gate. |
@@ -331,6 +365,7 @@ Turn on at most one flag per comparison run, on the support-gate rungs, after th
 | Zone-upsert or owner-upsert commits dominate heartbeat_ack time, or pool checkout waits while heartbeat QPS is the bulk of the statements | `R2C_HEARTBEAT_UPSERT_BATCH`: coalesce zone and owner writes per org on a short interval instead of a commit per heartbeat and per owned drone | `main.py:3661-3684`, `4531-4563`, `4592-4631` | Zone *broadcasts* are already throttled to 60 s (`4263-4274`). Do not "fix" the broadcast throttle. The sighting insert (`4824-4840`) is the same class of write; include it in the batch flag only if its rate, not the heartbeat rate, is the pool consumer. |
 | `_flight_submission_locks` is non-empty after uploads drain, or same-key uploads in one org fail to serialize | A bound-and-prune flag only if the baseline shows growth or lost serialization. First fix the counter so it updates inside `_flight_submission_locks_guard`. | `main.py:730-763` | Pruning on a zero waiter count is already implemented (`760-763`). The September review's "never removed" note is stale. Org is already part of the key (`748`). |
 | SQL log volume is large, or checkout wait is high while checked-out count sits at the default 5 + 10 | `R2C_DB_POOL_SIZE` and `R2C_DB_MAX_OVERFLOW` (tenant and control plane separately). Echo stays off. | `main.py:940-942`, `control_plane.py:1784-1789` | `echo=False`, `pool_pre_ping=True`, and `pool_recycle=300` are already set on both engines. Do not schedule an "turn echo off" change against this tree. Budget the LISTEN connection (`main.py:1856`) inside the control-plane total. Cloud SQL's max connections are shared with migrations and any overlapping revision; the flag must not size the pool as if this process were alone on the server. |
+| In-flight requests sit on 80 and clients queue or receive 429 while the process itself is healthy | A later change to Cloud Run container concurrency, still on one instance. `max-instances` does not move with it. | Live service: concurrency 80, `maxScale` 1, timeout 3600s, revision `r2c-tracker-pilot-00232-soz` | The baseline keeps both knobs. Raising concurrency is a follow-up after the at-and-beyond-80 files exist. Raising `max-instances` waits until coordination state is out of the process. Neither is a flag to flip so a rung goes green. |
 
 Comparison rule: the flagged run has to improve the specific row that justified it and must not push any other support-gate row from pass to fail. One flag per run. Leave the flag off in production until that comparison is stored next to the baseline.
 
@@ -376,7 +411,4 @@ Jitter on that backoff is a small RID2Caltopo change and the highest-leverage fi
 - Ken, 2026-11-14: clues go only to CalTopo. Tracker has no clue workload.
 - Ken, 2026-11-14: a warm restart with clients already connected is the primary reconnect case. Cold start is secondary.
 - RID2Caltopo 2.5.8 (`0eac4703`): owner traffic is about 1 `sighting` + 1 `traffic_position` per second per flying drone. Heartbeats, idle park, NOTAMs, and reconnect are the client section above. The restart herd is lockstep at about +2 s. `uniform-0-5` is a jitter comparison, not the shipped client.
-
-## TODO
-
-**Live Cloud Run CPU and concurrency.** `deploy.sh` passes neither `--cpu` nor `--concurrency`. The harness mirrors 1 vCPU and leaves concurrency uncapped, which matches Cloud Run's documented default of 80 only if the live service was never changed. File `gcloud run services describe r2c-tracker-pilot --project=r2c-tracker-pilot --region=us-west1` before quoting a container run as a production twin. Memory is set to 1 GiB by `deploy_pilot.sh` and is not part of this TODO.
+- Live describe, 2026-11-16, project `r2c-tracker-pilot`, revision `r2c-tracker-pilot-00232-soz`: 1 vCPU (`1000m`), 1 GiB, container concurrency 80, request timeout 3600s, `maxScale` 1, no `minScale`, CPU throttling on, startup CPU boost on. One instance times 80 in-flight requests is the site ceiling. Open sockets in scenarios B and C are compared with that 80. Behavior at and beyond 80 is recorded. Raising concurrency or `max-instances` is not part of the baseline.
