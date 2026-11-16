@@ -42,3 +42,4 @@ main.py                # include_router / register_coordination(app, …) only
 ## Non-goals
 
 - Multi-region routing, new message types, MQTT changes, CalTopo on server
+- Raising Cloud Run `max-instances` above 1. Live ownership stays in this process until a later, measured design. Per-org lock sharding and heartbeat batching are load follow-ups, not part of the move: [LOAD_TEST_HARNESS_SPEC.md](LOAD_TEST_HARNESS_SPEC.md). Incident always-on without adding instances: [CAMPAIGN_MODE_CHECKLIST.md](CAMPAIGN_MODE_CHECKLIST.md).

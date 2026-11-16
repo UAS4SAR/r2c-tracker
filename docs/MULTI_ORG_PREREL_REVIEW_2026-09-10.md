@@ -4,6 +4,8 @@ Reviewed 2026-09-10. Tracker: `project/modularize-coordination`, commit `b9b1264
 
 This is a source review and implementation proposal, not a deployment, capacity certification, or completed mobile feature. No production database was accessed or cloned. Repository documentation was treated as design history, not as authorization to execute its cutover commands.
 
+Line numbers below are from commit `b9b1264` (2026-09-10). On current `project/modularize-coordination` the tenant engine is already `echo=False` with `pool_pre_ping` and `pool_recycle`, and `get_weather` already runs on a bounded worker thread. Use [LOAD_TEST_HARNESS_SPEC.md](LOAD_TEST_HARNESS_SPEC.md) for the hot spots to measure, and [CAMPAIGN_MODE_CHECKLIST.md](CAMPAIGN_MODE_CHECKLIST.md) before leaving an instance always on. Do not implement from the old line numbers.
+
 ## Assessment
 
 The Tracker has a credible multi-organization foundation: scoped device authorization and upload routes, organization-aware coordination keys and persistence, organization-separated flight-log paths, audit facilities, and guarded release tooling. The current regression suite passes. The next step should be a safe persistent prerelease environment, followed by targeted runtime hardening and representative load tests. Raising the Cloud Run instance count now would be premature.
