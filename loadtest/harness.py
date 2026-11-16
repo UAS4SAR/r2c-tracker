@@ -115,8 +115,8 @@ class TrackerProcess:
             "PYTHONPATH": str(ROOT),
             "DATABASE_URL": self.database.tenant_url,
             "CONTROL_PLANE_DATABASE_URL": self.database.control_url,
-            "SECRET_KEY": "loadtest-local-session-key",
-            "CONTROL_PLANE_SIGNING_KEY": "loadtest-local-signing-key-32chars",
+            "SECRET_KEY": "loadtest-local-session-key",  # pragma: allowlist secret
+            "CONTROL_PLANE_SIGNING_KEY": "loadtest-local-signing-key-32chars",  # pragma: allowlist secret
             "CONTROL_PLANE_MODE": "live",
             "CONTROL_PLANE_PUBLIC_URL": "https://loadtest.r2c-tracker.example",
             "SESSION_COOKIE_HTTPS_ONLY": "false",
