@@ -1,0 +1,113 @@
+{
+  "scenario": "C-lockstep-16",
+  "backend": "postgres",
+  "orgs": 10,
+  "hot_orgs": 3,
+  "tablets_per_hot": 16,
+  "profile": "idle",
+  "reconnect": "lockstep",
+  "duration_s": 360.143,
+  "concurrency_limit": 80,
+  "cpu_pinned_to_one_core": true,
+  "memory_limit": "1GiB",
+  "oom": false,
+  "cpu_percent_of_one_core": 6.0,
+  "server_rss_mb": 169.8,
+  "launch_to_first_hello_s": null,
+  "connects": 459,
+  "connect_failures": 399,
+  "hello_acks": 121,
+  "parked": 14,
+  "ack_timeouts": 0,
+  "http_429": 0,
+  "http_errors": 1079,
+  "notam_statuses": [
+    503
+  ],
+  "hello_ack": {
+    "count": 121,
+    "p50_ms": 254.094,
+    "p95_ms": 330.267,
+    "p99_ms": 389.694,
+    "max_ms": 409.834
+  },
+  "heartbeat_ack": {
+    "count": 740,
+    "p50_ms": 6.627,
+    "p95_ms": 343.559,
+    "p99_ms": 438.778,
+    "max_ms": 495.571
+  },
+  "upload": {
+    "count": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null
+  },
+  "reconnect_from_close": {
+    "count": 59,
+    "p50_ms": 2353.369,
+    "p95_ms": 10066.26,
+    "p99_ms": 10090.579,
+    "max_ms": 10093.092
+  },
+  "reconnect_from_listen": {
+    "count": 62,
+    "p50_ms": 825.633,
+    "p95_ms": 62823.022,
+    "p99_ms": 63001.713,
+    "max_ms": 63031.282
+  },
+  "queue_wait": {
+    "count": 12,
+    "p50_ms": 128.224,
+    "p95_ms": 191.804,
+    "p99_ms": 197.381,
+    "max_ms": 198.776
+  },
+  "admission_rejected": 0,
+  "event_loop_lag": {
+    "count": 6733,
+    "p50_ms": 0.565,
+    "p95_ms": 1.63,
+    "p99_ms": 2.136,
+    "max_ms": 62.278
+  },
+  "lock_wait": {
+    "hub": {
+      "count": 38924,
+      "p50_ms": 0.001,
+      "p95_ms": 0.003,
+      "p99_ms": 0.003,
+      "max_ms": 0.026
+    },
+    "submission": {
+      "count": 0,
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null
+    },
+    "submission_guard": {
+      "count": 0,
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null
+    },
+    "other": {
+      "count": 33301,
+      "p50_ms": 0.001,
+      "p95_ms": 0.001,
+      "p99_ms": 0.002,
+      "max_ms": 0.335
+    }
+  },
+  "notes": [
+    "Weather is stubbed. FAA credentials are absent, so NOTAM fetches fail closed and clients retry every 15 s.",
+    "The tracker process is in cgroup r2c-loadtest: memory.max=1GiB, swap max=0, cpu.max=1.",
+    "Server CPU was pinned to one core."
+  ],
+  "open_sockets_planned": 62
+}

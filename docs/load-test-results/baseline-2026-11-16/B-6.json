@@ -1,0 +1,68 @@
+{
+  "scenario": "B-6",
+  "backend": "postgres",
+  "orgs": 10,
+  "hot_orgs": 3,
+  "tablets_per_hot": 6,
+  "profile": "idle",
+  "reconnect": "lockstep",
+  "duration_s": 38.012,
+  "concurrency_limit": 80,
+  "cpu_pinned_to_one_core": true,
+  "server_rss_mb": 161.0,
+  "connects": 53,
+  "connect_failures": 23,
+  "hello_acks": 32,
+  "parked": 14,
+  "ack_timeouts": 0,
+  "http_429": 0,
+  "http_errors": 49,
+  "notam_statuses": [
+    503
+  ],
+  "hello_ack": {
+    "count": 32,
+    "p50_ms": 160.034,
+    "p95_ms": 175.278,
+    "p99_ms": 176.959
+  },
+  "heartbeat_ack": {
+    "count": 45,
+    "p50_ms": 26.958,
+    "p95_ms": 209.507,
+    "p99_ms": 312.587
+  },
+  "upload": {
+    "count": 3,
+    "p50_ms": 160.453,
+    "p95_ms": 203.257,
+    "p99_ms": 207.062
+  },
+  "reconnect_from_close": {
+    "count": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null
+  },
+  "reconnect_from_listen": {
+    "count": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null
+  },
+  "queue_wait": {
+    "count": 1,
+    "p50_ms": 2.56,
+    "p95_ms": 2.56,
+    "p99_ms": 2.56
+  },
+  "admission_rejected": 0,
+  "event_loop_lag": null,
+  "lock_wait": null,
+  "notes": [
+    "Weather is stubbed. FAA credentials are absent, so NOTAM fetches fail closed and clients retry every 15 s.",
+    "Memory is sampled from VmRSS. This host did not apply a 1 GiB cgroup cap.",
+    "Server CPU was pinned to one core."
+  ],
+  "open_sockets_planned": 32
+}

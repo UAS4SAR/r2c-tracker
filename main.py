@@ -13,6 +13,11 @@ import subprocess
 import requests
 import asyncio
 import asyncpg
+if os.environ.get("R2C_LOADTEST_INSTRUMENT", "").strip() == "1":
+    # Local harness only. Default off, so production imports do not record timings.
+    from loadtest.instrument import install_lock_timing
+
+    install_lock_timing()
 import base64
 import warnings
 import traceback
@@ -720,6 +725,11 @@ def _normalize_tracker_token(token: Optional[str]) -> str:
 
 
 R2C_SWEEP_SEC = int(os.environ.get("R2C_SWEEP_SEC", "15"))
+# Local harness only. 0 leaves hello_ack on the production path. Read here so
+# the coordination class, which tests execute on its own, does not reference os.
+R2C_LOADTEST_DELAY_HELLO_ACK_MS = int(
+    os.environ.get("R2C_LOADTEST_DELAY_HELLO_ACK_MS", "0") or "0"
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1269,9 +1279,20 @@ async def lifespan(app: FastAPI):
     equipment_mail_stop = asyncio.Event()
     equipment_mail_task = asyncio.create_task(aircraft_readiness.mail_worker(
         control_plane_store, platform_admin_email_sender, equipment_mail_stop, logger))
+    lag_probe = None
+    if os.environ.get("R2C_LOADTEST_INSTRUMENT", "").strip() == "1":
+        from loadtest.instrument import start_lag_probe
+
+        lag_probe = await start_lag_probe()
     await r2c_hub.start()
     yield
     # Shutdown Clean up resources (if needed)
+    if lag_probe is not None:
+        lag_probe.cancel()
+        try:
+            await lag_probe
+        except asyncio.CancelledError:
+            pass
     await r2c_hub.stop()
     equipment_mail_stop.set()
     await equipment_mail_task
@@ -3482,6 +3503,13 @@ class R2CCoordinationHub:
             hello_ack["recommendedAppVersionCode"] = recommended_version_code
         if update_url:
             hello_ack["updateUrl"] = update_url
+        # NameError when coordination tests execute this class without the module global.
+        try:
+            delay_ms = int(R2C_LOADTEST_DELAY_HELLO_ACK_MS)
+        except NameError:
+            delay_ms = 0
+        if delay_ms > 0:
+            await asyncio.sleep(min(delay_ms, 30000) / 1000.0)
         await self._writer.send_text(websocket, json.dumps(hello_ack))
         await self.broadcast_zone_update(organization_id, map_id)
         await self._send_recent_drone_confirmations(websocket, organization_id, map_id, now_ms)

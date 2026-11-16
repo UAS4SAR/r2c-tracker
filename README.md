@@ -357,7 +357,9 @@ Checks cover idle database-connection recovery, bounded retention on PostgreSQL,
 authenticated uploads, cross-organization access denial, duplicate rejection,
 separate archive paths, and another organization's WebSocket coordination while
 weather processing is deliberately stalled. The existing security CI workflow
-also runs this suite. This is an initial system-test baseline; full browser
+also runs this suite. A separate local load harness lives in `loadtest/` and is
+described in [loadtest/README.md](loadtest/README.md). `tests/test_loadtest_smoke.py`
+runs one simulated tablet against SQLite and does not call Cloud Run. This is an initial system-test baseline; full browser
 onboarding/role journeys, real identity providers and managed video remain
 separate coverage to expand.
 
