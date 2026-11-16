@@ -725,6 +725,11 @@ def _normalize_tracker_token(token: Optional[str]) -> str:
 
 
 R2C_SWEEP_SEC = int(os.environ.get("R2C_SWEEP_SEC", "15"))
+# Local harness only. 0 leaves hello_ack on the production path. Read here so
+# the coordination class, which tests execute on its own, does not reference os.
+R2C_LOADTEST_DELAY_HELLO_ACK_MS = int(
+    os.environ.get("R2C_LOADTEST_DELAY_HELLO_ACK_MS", "0") or "0"
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -3498,8 +3503,11 @@ class R2CCoordinationHub:
             hello_ack["recommendedAppVersionCode"] = recommended_version_code
         if update_url:
             hello_ack["updateUrl"] = update_url
-        # Local harness only. Unset or 0 keeps the production path.
-        delay_ms = int(os.environ.get("R2C_LOADTEST_DELAY_HELLO_ACK_MS", "0") or "0")
+        # NameError when coordination tests execute this class without the module global.
+        try:
+            delay_ms = int(R2C_LOADTEST_DELAY_HELLO_ACK_MS)
+        except NameError:
+            delay_ms = 0
         if delay_ms > 0:
             await asyncio.sleep(min(delay_ms, 30000) / 1000.0)
         await self._writer.send_text(websocket, json.dumps(hello_ack))
