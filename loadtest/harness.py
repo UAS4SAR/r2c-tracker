@@ -126,11 +126,13 @@ class LocalDatabase:
 
 
 class TrackerProcess:
-    def __init__(self, database: LocalDatabase, directory: Path, instrument: bool, hello_delay_ms: int):
+    def __init__(self, database: LocalDatabase, directory: Path, instrument: bool, hello_delay_ms: int,
+                 optimizations: bool = False):
         self.database = database
         self.directory = directory
         self.instrument = instrument
         self.hello_delay_ms = hello_delay_ms
+        self.optimizations = optimizations
         self.port = _free_port()
         self.process: Optional[subprocess.Popen] = None
         self.log_path = directory / "server.log"
@@ -163,6 +165,15 @@ class TrackerProcess:
             env["R2C_LOADTEST_METRICS"] = str(self.metrics_path)
         if self.hello_delay_ms > 0:
             env["R2C_LOADTEST_DELAY_HELLO_ACK_MS"] = str(self.hello_delay_ms)
+        if self.optimizations:
+            env.update({
+                "R2C_SKIP_EMPTY_DEVICE_NAME": "1",
+                "R2C_CACHE_ORG_CONFIG": "1",
+                "R2C_DB_POOL_SIZE": "20",
+                "R2C_DB_MAX_OVERFLOW": "40",
+                "R2C_SAFE_ZONE_UPSERT": "1",
+                "R2C_CAP_UPLOAD_BODY": "1",
+            })
         log = self.log_path.open("ab")
         self.launched_at = time.perf_counter()
         self.process = subprocess.Popen(
@@ -368,6 +379,7 @@ class RunConfig:
     backend: str
     instrument: bool
     cold_start: bool = False
+    optimizations: bool = False
 
 
 class ResourceSampler:
@@ -467,6 +479,8 @@ def summarize(config: RunConfig, tablets: list[Tablet], server: TrackerProcess, 
         "admission_rejected": tablets[0].admission.rejected if tablets else 0,
         "event_loop_lag": latency_block(lags) if config.instrument else None,
         "lock_wait": _lock_blocks(instrument) if config.instrument else None,
+        "spans": _span_blocks(instrument) if config.instrument else None,
+        "optimizations": config.optimizations,
         "notes": notes,
         "client_closes": _client_closes(tablets),
         "tablets": _tablet_rows(tablets),
@@ -476,11 +490,18 @@ def summarize(config: RunConfig, tablets: list[Tablet], server: TrackerProcess, 
 async def execute(config: RunConfig, directory: Path) -> dict:
     database = LocalDatabase(directory, config.backend)
     database.start()
-    server = TrackerProcess(database, directory, config.instrument, config.hello_delay_ms)
+    server = TrackerProcess(
+        database, directory, config.instrument, config.hello_delay_ms, config.optimizations,
+    )
     notes = [
         "Weather is stubbed. FAA credentials are absent, so NOTAM fetches fail closed and clients retry every 15 s.",
         "The tracker process is in cgroup r2c-loadtest: memory.max=1GiB, swap max=0, cpu.max=1.",
     ]
+    if config.optimizations:
+        notes.append(
+            "Flags on: R2C_SKIP_EMPTY_DEVICE_NAME, R2C_CACHE_ORG_CONFIG, "
+            "R2C_DB_POOL_SIZE=20, R2C_DB_MAX_OVERFLOW=40, R2C_SAFE_ZONE_UPSERT, R2C_CAP_UPLOAD_BODY."
+        )
     try:
         organizations = _orgs(config.orgs, config.hot_orgs, config.tablets_per_hot, config.profile)
         tokens = await provision(database.control_url, organizations)
@@ -630,6 +651,15 @@ def markdown_report(results: list[dict]) -> str:
         lines.append("```")
         lines.append("")
     return "\n".join(lines) + "\n"
+
+
+def _span_blocks(instrument: dict) -> dict:
+    spans = instrument.get("spans_s") or {}
+    return {
+        name: latency_block(samples)
+        for name, samples in sorted(spans.items())
+        if isinstance(samples, list)
+    }
 
 
 def _client_closes(tablets: list[Tablet]) -> dict:

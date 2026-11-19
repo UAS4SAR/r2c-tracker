@@ -1,0 +1,600 @@
+{
+  "scenario": "B-6-off",
+  "backend": "postgres",
+  "orgs": 10,
+  "hot_orgs": 3,
+  "tablets_per_hot": 6,
+  "profile": "idle",
+  "reconnect": "lockstep",
+  "duration_s": 360.156,
+  "concurrency_limit": 80,
+  "cpu_pinned_to_one_core": true,
+  "memory_limit": "1GiB",
+  "oom": false,
+  "cpu_percent_of_one_core": 3.0,
+  "server_rss_mb": 166.4,
+  "launch_to_first_hello_s": null,
+  "connects": 32,
+  "connect_failures": 0,
+  "hello_acks": 32,
+  "parked": 14,
+  "ack_timeouts": 0,
+  "http_429": 0,
+  "http_errors": 432,
+  "notam_statuses": [
+    503
+  ],
+  "hello_ack": {
+    "count": 32,
+    "p50_ms": 175.314,
+    "p95_ms": 194.93,
+    "p99_ms": 196.984,
+    "max_ms": 197.301
+  },
+  "heartbeat_ack": {
+    "count": 300,
+    "p50_ms": 4.804,
+    "p95_ms": 190.383,
+    "p99_ms": 291.774,
+    "max_ms": 403.253
+  },
+  "upload": {
+    "count": 3,
+    "p50_ms": 229.57,
+    "p95_ms": 272.911,
+    "p99_ms": 276.764,
+    "max_ms": 277.727
+  },
+  "reconnect_from_close": {
+    "count": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null
+  },
+  "reconnect_from_listen": {
+    "count": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null
+  },
+  "queue_wait": {
+    "count": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null
+  },
+  "admission_rejected": 0,
+  "event_loop_lag": {
+    "count": 7043,
+    "p50_ms": 0.384,
+    "p95_ms": 1.388,
+    "p99_ms": 2.046,
+    "max_ms": 33.963
+  },
+  "lock_wait": {
+    "hub": {
+      "count": 15781,
+      "p50_ms": 0.001,
+      "p95_ms": 0.002,
+      "p99_ms": 0.003,
+      "max_ms": 0.034
+    },
+    "submission": {
+      "count": 3,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "max_ms": 0.0
+    },
+    "submission_guard": {
+      "count": 3,
+      "p50_ms": 0.001,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "max_ms": 0.001
+    },
+    "other": {
+      "count": 15294,
+      "p50_ms": 0.001,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "max_ms": 0.182
+    }
+  },
+  "spans": {
+    "heartbeat.ack_send": {
+      "count": 300,
+      "p50_ms": 0.154,
+      "p95_ms": 0.208,
+      "p99_ms": 0.312,
+      "max_ms": 6.67
+    },
+    "heartbeat.ack_send.burst": {
+      "count": 39,
+      "p50_ms": 0.132,
+      "p95_ms": 0.213,
+      "p99_ms": 4.32,
+      "max_ms": 6.67
+    },
+    "heartbeat.ack_send.steady": {
+      "count": 261,
+      "p50_ms": 0.157,
+      "p95_ms": 0.208,
+      "p99_ms": 0.25,
+      "max_ms": 0.392
+    },
+    "heartbeat.owner_upserts": {
+      "count": 300,
+      "p50_ms": 0.0,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "max_ms": 0.001
+    },
+    "heartbeat.owner_upserts.burst": {
+      "count": 39,
+      "p50_ms": 0.0,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "max_ms": 0.001
+    },
+    "heartbeat.owner_upserts.steady": {
+      "count": 261,
+      "p50_ms": 0.0,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "max_ms": 0.001
+    },
+    "heartbeat.zone_broadcast": {
+      "count": 300,
+      "p50_ms": 0.053,
+      "p95_ms": 0.891,
+      "p99_ms": 4.218,
+      "max_ms": 6.312
+    },
+    "heartbeat.zone_broadcast.burst": {
+      "count": 39,
+      "p50_ms": 0.052,
+      "p95_ms": 4.658,
+      "p99_ms": 5.944,
+      "max_ms": 6.312
+    },
+    "heartbeat.zone_broadcast.steady": {
+      "count": 261,
+      "p50_ms": 0.053,
+      "p95_ms": 0.783,
+      "p99_ms": 1.101,
+      "max_ms": 1.768
+    },
+    "heartbeat.zone_upsert": {
+      "count": 300,
+      "p50_ms": 3.981,
+      "p95_ms": 40.722,
+      "p99_ms": 58.576,
+      "max_ms": 59.916
+    },
+    "heartbeat.zone_upsert.burst": {
+      "count": 39,
+      "p50_ms": 20.718,
+      "p95_ms": 59.395,
+      "p99_ms": 59.817,
+      "max_ms": 59.916
+    },
+    "heartbeat.zone_upsert.steady": {
+      "count": 261,
+      "p50_ms": 3.734,
+      "p95_ms": 15.616,
+      "p99_ms": 41.047,
+      "max_ms": 44.037
+    },
+    "hello.ack_send": {
+      "count": 32,
+      "p50_ms": 0.114,
+      "p95_ms": 0.174,
+      "p99_ms": 0.21,
+      "max_ms": 0.225
+    },
+    "hello.ack_send.burst": {
+      "count": 32,
+      "p50_ms": 0.114,
+      "p95_ms": 0.174,
+      "p99_ms": 0.21,
+      "max_ms": 0.225
+    },
+    "hello.config": {
+      "count": 32,
+      "p50_ms": 35.995,
+      "p95_ms": 45.905,
+      "p99_ms": 47.383,
+      "max_ms": 47.799
+    },
+    "hello.config.burst": {
+      "count": 32,
+      "p50_ms": 35.995,
+      "p95_ms": 45.905,
+      "p99_ms": 47.383,
+      "max_ms": 47.799
+    },
+    "hello.device_name": {
+      "count": 32,
+      "p50_ms": 70.785,
+      "p95_ms": 91.774,
+      "p99_ms": 101.724,
+      "max_ms": 104.621
+    },
+    "hello.device_name.burst": {
+      "count": 32,
+      "p50_ms": 70.785,
+      "p95_ms": 91.774,
+      "p99_ms": 101.724,
+      "max_ms": 104.621
+    },
+    "hello.zone_broadcast": {
+      "count": 32,
+      "p50_ms": 6.002,
+      "p95_ms": 8.566,
+      "p99_ms": 8.658,
+      "max_ms": 8.664
+    },
+    "hello.zone_broadcast.burst": {
+      "count": 32,
+      "p50_ms": 6.002,
+      "p95_ms": 8.566,
+      "p99_ms": 8.658,
+      "max_ms": 8.664
+    },
+    "hello.zone_upsert": {
+      "count": 32,
+      "p50_ms": 47.168,
+      "p95_ms": 78.471,
+      "p99_ms": 82.176,
+      "max_ms": 83.698
+    },
+    "hello.zone_upsert.burst": {
+      "count": 32,
+      "p50_ms": 47.168,
+      "p95_ms": 78.471,
+      "p99_ms": 82.176,
+      "max_ms": 83.698
+    },
+    "pool.connect": {
+      "count": 424,
+      "p50_ms": 1.413,
+      "p95_ms": 30.306,
+      "p99_ms": 51.409,
+      "max_ms": 76.051
+    },
+    "pool.connect.burst": {
+      "count": 109,
+      "p50_ms": 15.774,
+      "p95_ms": 50.889,
+      "p99_ms": 72.304,
+      "max_ms": 76.051
+    },
+    "pool.connect.steady": {
+      "count": 315,
+      "p50_ms": 1.161,
+      "p95_ms": 10.462,
+      "p99_ms": 27.812,
+      "max_ms": 31.291
+    },
+    "traffic.broadcast": {
+      "count": 6336,
+      "p50_ms": 0.215,
+      "p95_ms": 0.991,
+      "p99_ms": 1.706,
+      "max_ms": 63.291
+    },
+    "traffic.broadcast.burst": {
+      "count": 522,
+      "p50_ms": 0.309,
+      "p95_ms": 1.851,
+      "p99_ms": 4.095,
+      "max_ms": 7.173
+    },
+    "traffic.broadcast.steady": {
+      "count": 5814,
+      "p50_ms": 0.207,
+      "p95_ms": 0.957,
+      "p99_ms": 1.432,
+      "max_ms": 63.291
+    },
+    "traffic.schedule_send": {
+      "count": 6336,
+      "p50_ms": 0.126,
+      "p95_ms": 0.177,
+      "p99_ms": 0.227,
+      "max_ms": 0.738
+    },
+    "traffic.schedule_send.burst": {
+      "count": 522,
+      "p50_ms": 0.117,
+      "p95_ms": 0.153,
+      "p99_ms": 0.174,
+      "max_ms": 0.404
+    },
+    "traffic.schedule_send.steady": {
+      "count": 5814,
+      "p50_ms": 0.127,
+      "p95_ms": 0.178,
+      "p99_ms": 0.229,
+      "max_ms": 0.738
+    },
+    "upload.archive": {
+      "count": 3,
+      "p50_ms": 2.113,
+      "p95_ms": 2.326,
+      "p99_ms": 2.345,
+      "max_ms": 2.35
+    },
+    "upload.archive.burst": {
+      "count": 3,
+      "p50_ms": 2.113,
+      "p95_ms": 2.326,
+      "p99_ms": 2.345,
+      "max_ms": 2.35
+    },
+    "upload.archive_size": {
+      "count": 3,
+      "p50_ms": 0.759,
+      "p95_ms": 0.79,
+      "p99_ms": 0.792,
+      "max_ms": 0.793
+    },
+    "upload.archive_size.burst": {
+      "count": 3,
+      "p50_ms": 0.759,
+      "p95_ms": 0.79,
+      "p99_ms": 0.792,
+      "max_ms": 0.793
+    },
+    "upload.body": {
+      "count": 3,
+      "p50_ms": 7.163,
+      "p95_ms": 12.934,
+      "p99_ms": 13.447,
+      "max_ms": 13.576
+    },
+    "upload.body.burst": {
+      "count": 3,
+      "p50_ms": 7.163,
+      "p95_ms": 12.934,
+      "p99_ms": 13.447,
+      "max_ms": 13.576
+    },
+    "upload.commit": {
+      "count": 3,
+      "p50_ms": 3.341,
+      "p95_ms": 3.758,
+      "p99_ms": 3.795,
+      "max_ms": 3.804
+    },
+    "upload.commit.burst": {
+      "count": 3,
+      "p50_ms": 3.341,
+      "p95_ms": 3.758,
+      "p99_ms": 3.795,
+      "max_ms": 3.804
+    },
+    "upload.create": {
+      "count": 3,
+      "p50_ms": 110.169,
+      "p95_ms": 115.695,
+      "p99_ms": 116.186,
+      "max_ms": 116.309
+    },
+    "upload.create.burst": {
+      "count": 3,
+      "p50_ms": 110.169,
+      "p95_ms": 115.695,
+      "p99_ms": 116.186,
+      "max_ms": 116.309
+    },
+    "upload.extract": {
+      "count": 3,
+      "p50_ms": 20.985,
+      "p95_ms": 24.285,
+      "p99_ms": 24.578,
+      "max_ms": 24.651
+    },
+    "upload.extract.burst": {
+      "count": 3,
+      "p50_ms": 20.985,
+      "p95_ms": 24.285,
+      "p99_ms": 24.578,
+      "max_ms": 24.651
+    },
+    "upload.flush": {
+      "count": 3,
+      "p50_ms": 2.237,
+      "p95_ms": 3.432,
+      "p99_ms": 3.539,
+      "max_ms": 3.565
+    },
+    "upload.flush.burst": {
+      "count": 3,
+      "p50_ms": 2.237,
+      "p95_ms": 3.432,
+      "p99_ms": 3.539,
+      "max_ms": 3.565
+    },
+    "upload.meter": {
+      "count": 3,
+      "p50_ms": 7.994,
+      "p95_ms": 8.715,
+      "p99_ms": 8.78,
+      "max_ms": 8.796
+    },
+    "upload.meter.burst": {
+      "count": 3,
+      "p50_ms": 7.994,
+      "p95_ms": 8.715,
+      "p99_ms": 8.78,
+      "max_ms": 8.796
+    },
+    "upload.overlap": {
+      "count": 3,
+      "p50_ms": 12.778,
+      "p95_ms": 14.869,
+      "p99_ms": 15.055,
+      "max_ms": 15.102
+    },
+    "upload.overlap.burst": {
+      "count": 3,
+      "p50_ms": 12.778,
+      "p95_ms": 14.869,
+      "p99_ms": 15.055,
+      "max_ms": 15.102
+    },
+    "upload.parse": {
+      "count": 3,
+      "p50_ms": 0.021,
+      "p95_ms": 0.022,
+      "p99_ms": 0.023,
+      "max_ms": 0.023
+    },
+    "upload.parse.burst": {
+      "count": 3,
+      "p50_ms": 0.021,
+      "p95_ms": 0.022,
+      "p99_ms": 0.023,
+      "max_ms": 0.023
+    },
+    "upload.weather": {
+      "count": 3,
+      "p50_ms": 10.417,
+      "p95_ms": 10.728,
+      "p99_ms": 10.755,
+      "max_ms": 10.762
+    },
+    "upload.weather.burst": {
+      "count": 3,
+      "p50_ms": 10.417,
+      "p95_ms": 10.728,
+      "p99_ms": 10.755,
+      "max_ms": 10.762
+    },
+    "ws.heartbeat": {
+      "count": 300,
+      "p50_ms": 4.328,
+      "p95_ms": 41.942,
+      "p99_ms": 62.482,
+      "max_ms": 65.669
+    },
+    "ws.heartbeat.burst": {
+      "count": 39,
+      "p50_ms": 21.008,
+      "p95_ms": 63.697,
+      "p99_ms": 64.958,
+      "max_ms": 65.669
+    },
+    "ws.heartbeat.steady": {
+      "count": 261,
+      "p50_ms": 4.09,
+      "p95_ms": 15.93,
+      "p99_ms": 41.324,
+      "max_ms": 44.342
+    },
+    "ws.hello": {
+      "count": 32,
+      "p50_ms": 216.65,
+      "p95_ms": 262.275,
+      "p99_ms": 274.281,
+      "max_ms": 278.233
+    },
+    "ws.hello.burst": {
+      "count": 32,
+      "p50_ms": 216.65,
+      "p95_ms": 262.275,
+      "p99_ms": 274.281,
+      "max_ms": 278.233
+    },
+    "ws.other": {
+      "count": 14,
+      "p50_ms": 37.625,
+      "p95_ms": 48.403,
+      "p99_ms": 50.234,
+      "max_ms": 50.691
+    },
+    "ws.other.steady": {
+      "count": 14,
+      "p50_ms": 37.625,
+      "p95_ms": 48.403,
+      "p99_ms": 50.234,
+      "max_ms": 50.691
+    },
+    "ws.sighting": {
+      "count": 8460,
+      "p50_ms": 0.082,
+      "p95_ms": 0.16,
+      "p99_ms": 0.202,
+      "max_ms": 1.289
+    },
+    "ws.sighting.burst": {
+      "count": 684,
+      "p50_ms": 0.063,
+      "p95_ms": 0.125,
+      "p99_ms": 0.162,
+      "max_ms": 0.177
+    },
+    "ws.sighting.steady": {
+      "count": 7776,
+      "p50_ms": 0.083,
+      "p95_ms": 0.163,
+      "p99_ms": 0.203,
+      "max_ms": 1.289
+    },
+    "ws.traffic_position": {
+      "count": 6336,
+      "p50_ms": 0.513,
+      "p95_ms": 1.337,
+      "p99_ms": 2.075,
+      "max_ms": 63.633
+    },
+    "ws.traffic_position.burst": {
+      "count": 522,
+      "p50_ms": 0.541,
+      "p95_ms": 2.198,
+      "p99_ms": 4.308,
+      "max_ms": 7.461
+    },
+    "ws.traffic_position.steady": {
+      "count": 5814,
+      "p50_ms": 0.512,
+      "p95_ms": 1.289,
+      "p99_ms": 1.876,
+      "max_ms": 63.633
+    }
+  },
+  "optimizations": false,
+  "notes": [
+    "Weather is stubbed. FAA credentials are absent, so NOTAM fetches fail closed and clients retry every 15 s.",
+    "The tracker process is in cgroup r2c-loadtest: memory.max=1GiB, swap max=0, cpu.max=1.",
+    "Server CPU was pinned to one core."
+  ],
+  "client_closes": {
+    "before_hello": 0,
+    "after_hello": 0,
+    "age_s": {
+      "count": 0,
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null
+    },
+    "reasons": {}
+  },
+  "open_sockets_planned": 32,
+  "server_log": {
+    "broadcast_retired_lines": 16,
+    "broadcast_retired_sockets": 24,
+    "closes": {
+      "code=1000 reason=": 17
+    },
+    "errors": {
+      "WebSocket is not connected. Need to call \"accept\" first.": 15
+    }
+  }
+}

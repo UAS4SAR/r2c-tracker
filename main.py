@@ -13,11 +13,35 @@ import subprocess
 import requests
 import asyncio
 import asyncpg
+_loadtest_span_factory = None
 if os.environ.get("R2C_LOADTEST_INSTRUMENT", "").strip() == "1":
     # Local harness only. Default off, so production imports do not record timings.
     from loadtest.instrument import install_lock_timing
+    from loadtest.instrument import span as _loadtest_span_factory
 
     install_lock_timing()
+
+
+class _NullSpan:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *_args):
+        return False
+
+
+_NULL_SPAN = _NullSpan()
+
+
+def _loadtest_span(name):
+    """No-op unless the load harness turned instrumentation on."""
+    try:
+        factory = _loadtest_span_factory
+    except NameError:
+        factory = None
+    if factory is None:
+        return _NULL_SPAN
+    return factory(name)
 import base64
 import warnings
 import traceback
@@ -225,6 +249,27 @@ MAX_FLIGHT_LOG_BYTES = int(
 MAX_ARCHIVE_EXPANDED_BYTES = int(
     os.environ.get("MAX_ARCHIVE_EXPANDED_BYTES", str(512 * 1024 * 1024))
 )
+
+
+async def _read_capped_body(request: Request, max_bytes: int) -> bytes:
+    """Stop reading once the body exceeds max_bytes. Used only behind R2C_CAP_UPLOAD_BODY."""
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Upload exceeds the {max_bytes // (1024 * 1024)} MiB limit.",
+        )
+    chunks = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Upload exceeds the {max_bytes // (1024 * 1024)} MiB limit.",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 async def read_upload_with_limit(
@@ -947,9 +992,38 @@ class R2CRecentSighting(Base):
     alt_m = Column(Float, default=0.0)
     received_ms = Column(BigInteger, default=0)
 
-engine = create_async_engine(
-    DB_URL, echo=False, pool_pre_ping=True, pool_recycle=300,
-)
+async def _ensure_unique_zone_scope(conn) -> None:
+    """Collapse duplicate zone rows, then enforce one row per scope.
+
+    Called only when R2C_SAFE_ZONE_UPSERT=1. The default startup path does not.
+    """
+    await conn.execute(text(
+        "DELETE FROM r2c_zone_state WHERE id NOT IN ("
+        "SELECT MAX(id) FROM r2c_zone_state "
+        "GROUP BY organization_id, map_id, zone_id)"
+    ))
+    await conn.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_r2c_zone_state_scope "
+        "ON r2c_zone_state (organization_id, map_id, zone_id)"
+    ))
+
+
+def _engine_kwargs() -> dict:
+    """Default pool matches SQLAlchemy. R2C_DB_POOL_SIZE opts into a larger one."""
+    kwargs = {"echo": False, "pool_pre_ping": True, "pool_recycle": 300}
+    raw_size = os.environ.get("R2C_DB_POOL_SIZE", "").strip()
+    if raw_size:
+        kwargs["pool_size"] = int(raw_size)
+        raw_overflow = os.environ.get("R2C_DB_MAX_OVERFLOW", "").strip()
+        kwargs["max_overflow"] = int(raw_overflow) if raw_overflow else int(raw_size)
+    return kwargs
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip() == "1"
+
+
+engine = create_async_engine(DB_URL, **_engine_kwargs())
 
 
 async def migrate_r2c_coordination_schema():
@@ -1113,6 +1187,9 @@ async def migrate_r2c_coordination_schema():
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_r2c_drone_confirmation_state_scope "
             "ON r2c_drone_confirmation_state (organization_id, map_id, remote_id)"
         ))
+        if _env_flag("R2C_SAFE_ZONE_UPSERT"):
+            # Off by default. Enabling it is the only path that changes this table.
+            await _ensure_unique_zone_scope(conn)
 
 
 async def migrate_flight_archive_schema():
@@ -1281,8 +1358,9 @@ async def lifespan(app: FastAPI):
         control_plane_store, platform_admin_email_sender, equipment_mail_stop, logger))
     lag_probe = None
     if os.environ.get("R2C_LOADTEST_INSTRUMENT", "").strip() == "1":
-        from loadtest.instrument import start_lag_probe
+        from loadtest.instrument import install_pool_timing, start_lag_probe
 
+        install_pool_timing(engine)
         lag_probe = await start_lag_probe()
     await r2c_hub.start()
     yield
@@ -1514,6 +1592,23 @@ def organization_config_upgrade_message(source: ConnectedConfigSource) -> str:
 
 
 class R2CCoordinationHub:
+    class _NullSpan:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *_args):
+            return False
+
+    def _span(self, name):
+        """No-op when coordination tests load this class without the module global."""
+        try:
+            factory = _loadtest_span_factory
+        except NameError:
+            factory = None
+        if factory is None:
+            return R2CCoordinationHub._NullSpan()
+        return factory(name)
+
     STANDALONE_PREFIX = "Standalone_"
     STANDALONE_GROUP_RADIUS_M = 2.0 * 1609.344
     CONFIRMATION_RETENTION_MS = 12 * 60 * 60 * 1000
@@ -1550,6 +1645,8 @@ class R2CCoordinationHub:
         self._video_thumbnails: dict[
             tuple[str, str], tuple[bytes, str, datetime]
         ] = {}
+        self._config_version_cache: dict[str, tuple[float, int]] = {}
+        self._config_version_inflight: dict[str, asyncio.Task] = {}
 
     async def resolve_tablet_link_code(
         self,
@@ -3379,6 +3476,34 @@ class R2CCoordinationHub:
             )
             return False
 
+    async def _organization_config_version_ms(self, organization_id: str) -> int:
+        try:
+            cache_enabled = _env_flag("R2C_CACHE_ORG_CONFIG")
+        except NameError:
+            cache_enabled = False
+        store = globals()["control_plane_store"]
+        if not cache_enabled:
+            return int(await store.get_organization_config_version_ms(organization_id))
+        import time as _time
+        cached = self._config_version_cache.get(organization_id)
+        if cached is not None and _time.monotonic() - cached[0] < 5.0:
+            return cached[1]
+        # Concurrent hellos for one organization share a single lookup.
+        task = self._config_version_inflight.get(organization_id)
+        if task is None:
+            task = asyncio.create_task(store.get_organization_config_version_ms(organization_id))
+            self._config_version_inflight[organization_id] = task
+        try:
+            version = int(await task)
+        except Exception:
+            if self._config_version_inflight.get(organization_id) is task:
+                self._config_version_inflight.pop(organization_id, None)
+            raise
+        self._config_version_cache[organization_id] = (_time.monotonic(), version)
+        if self._config_version_inflight.get(organization_id) is task:
+            self._config_version_inflight.pop(organization_id, None)
+        return version
+
     async def _handle_hello(self, websocket: WebSocket, payload: dict):
         reported_map_id = (payload.get("mapId", "") or "").strip()
         zone_id = payload.get("zoneId", "") or payload.get("guid", "")
@@ -3387,12 +3512,22 @@ class R2CCoordinationHub:
             connection = self._connections.get(websocket)
             credential = connection.device_credential if connection is not None else None
         canonical_device_name = ""
-        if credential is not None and control_plane_store is not None:
+        device_model = str(payload.get("deviceModel", "") or "")
+        try:
+            skip_empty_name = _env_flag("R2C_SKIP_EMPTY_DEVICE_NAME")
+        except NameError:
+            skip_empty_name = False
+        if skip_empty_name and not device_model.strip():
+            # Auth already accepted this socket. An empty model only re-reads
+            # the credential and returns "".
+            canonical_device_name = ""
+        elif credential is not None and control_plane_store is not None:
             try:
-                canonical_device_name = await control_plane_store.assign_operational_device_name(
-                    credential_id=credential.id,
-                    device_model=str(payload.get("deviceModel", "") or ""),
-                )
+                with self._span("hello.device_name"):
+                    canonical_device_name = await control_plane_store.assign_operational_device_name(
+                        credential_id=credential.id,
+                        device_model=device_model,
+                    )
             except ControlPlaneError as exc:
                 logger.warning(
                     "Unable to assign canonical organization device name credential=%s: %s",
@@ -3454,23 +3589,24 @@ class R2CCoordinationHub:
             conn.guid or zone_id,
             max(now_ms - int(conn.connected_at_ms or now_ms), 0),
         )
-        await self._upsert_zone_state(
-            organization_id,
-            map_id,
-            zone_id,
-            conn.guid or zone_id,
-            conn.name,
-            conn.lat,
-            conn.lng,
-            conn.caltopo_rtt_ms,
-            True,
-            now_ms,
-            reported_map_id,
-            coordination_mode,
-            "online",
-            conn.app_version,
-            conn.app_version_code,
-        )
+        with self._span("hello.zone_upsert"):
+            await self._upsert_zone_state(
+                organization_id,
+                map_id,
+                zone_id,
+                conn.guid or zone_id,
+                conn.name,
+                conn.lat,
+                conn.lng,
+                conn.caltopo_rtt_ms,
+                True,
+                now_ms,
+                reported_map_id,
+                coordination_mode,
+                "online",
+                conn.app_version,
+                conn.app_version_code,
+            )
         hello_ack = {
             "type": "hello_ack",
             "serverTime": now_ms,
@@ -3481,14 +3617,12 @@ class R2CCoordinationHub:
             "idleParkSec": R2C_IDLE_PARK_SEC,
             "standbyRecommended": True,
             "standbyParkSec": R2C_IDLE_PARK_SEC,
-            "organizationConfigVersionMs": (
-                await globals()["control_plane_store"].get_organization_config_version_ms(
-                    organization_id
-                )
-                if conn.device_credential is not None and globals().get("control_plane_store") is not None
-                else 0
-            ),
         }
+        config_version_ms = 0
+        if conn.device_credential is not None and globals().get("control_plane_store") is not None:
+            with self._span("hello.config"):
+                config_version_ms = await self._organization_config_version_ms(organization_id)
+        hello_ack["organizationConfigVersionMs"] = config_version_ms
         if canonical_device_name:
             hello_ack["canonicalDeviceName"] = canonical_device_name
         app_platform = str(payload.get("appPlatform", "") or "").strip().lower()
@@ -3510,8 +3644,10 @@ class R2CCoordinationHub:
             delay_ms = 0
         if delay_ms > 0:
             await asyncio.sleep(min(delay_ms, 30000) / 1000.0)
-        await self._writer.send_text(websocket, json.dumps(hello_ack))
-        await self.broadcast_zone_update(organization_id, map_id)
+        with self._span("hello.ack_send"):
+            await self._writer.send_text(websocket, json.dumps(hello_ack))
+        with self._span("hello.zone_broadcast"):
+            await self.broadcast_zone_update(organization_id, map_id)
         await self._send_recent_drone_confirmations(websocket, organization_id, map_id, now_ms)
         await self._send_recent_peer_traffic(websocket, organization_id, map_id, now_ms)
 
@@ -3687,27 +3823,29 @@ class R2CCoordinationHub:
                         owner_lease_expire_ms = max(owner_lease_expire_ms, int(owner["lease_expire_ms"]))
                         owner_updates.append((organization_id, owner_map_id, remote_id, dict(owner)))
         if map_id and zone_id:
-            await self._upsert_zone_state(
-                organization_id,
-                map_id,
-                zone_id,
-                guid or zone_id,
-                name,
-                lat,
-                lng,
-                caltopo_rtt_ms,
-                True,
-                now_ms,
-                reported_map_id,
-                coordination_mode,
-                "online",
-                app_version,
-                app_version_code,
-            )
+            with self._span("heartbeat.zone_upsert"):
+                await self._upsert_zone_state(
+                    organization_id,
+                    map_id,
+                    zone_id,
+                    guid or zone_id,
+                    name,
+                    lat,
+                    lng,
+                    caltopo_rtt_ms,
+                    True,
+                    now_ms,
+                    reported_map_id,
+                    coordination_mode,
+                    "online",
+                    app_version,
+                    app_version_code,
+                )
         if old_map_id_for_update and zone_id:
             await self._delete_zone_state(organization_id, old_map_id_for_update, zone_id)
-        for owner_organization_id, owner_map_id, remote_id, owner in owner_updates:
-            await self._upsert_owner_state(owner_organization_id, owner_map_id, remote_id, owner)
+        with self._span("heartbeat.owner_upserts"):
+            for owner_organization_id, owner_map_id, remote_id, owner in owner_updates:
+                await self._upsert_owner_state(owner_organization_id, owner_map_id, remote_id, owner)
         for owner_organization_id, owner_map_id, remote_id in owner_deletes:
             await self._delete_owner_state(owner_organization_id, owner_map_id, remote_id)
         logger.debug(
@@ -3718,18 +3856,20 @@ class R2CCoordinationHub:
             payload.get("seq"),
             owner_lease_expire_ms,
         )
-        await self._writer.send_text(websocket, json.dumps({
-            "type": "heartbeat_ack",
-            "serverTime": now_ms,
-            "mapId": map_id,
-            "zoneId": zone_id,
-            "guid": guid,
-            "leaseSec": R2C_LEASE_SEC,
-            "ownerLeaseExpireTs": owner_lease_expire_ms,
-            "clientSeq": payload.get("seq"),
-        }))
+        with self._span("heartbeat.ack_send"):
+            await self._writer.send_text(websocket, json.dumps({
+                "type": "heartbeat_ack",
+                "serverTime": now_ms,
+                "mapId": map_id,
+                "zoneId": zone_id,
+                "guid": guid,
+                "leaseSec": R2C_LEASE_SEC,
+                "ownerLeaseExpireTs": owner_lease_expire_ms,
+                "clientSeq": payload.get("seq"),
+            }))
         if map_id:
-            await self.broadcast_zone_update(organization_id, map_id, force=False)
+            with self._span("heartbeat.zone_broadcast"):
+                await self.broadcast_zone_update(organization_id, map_id, force=False)
         if old_map_id_for_update and old_map_id_for_update != map_id:
             await self.broadcast_zone_update(organization_id, old_map_id_for_update)
         for event in confirmation_replays:
@@ -4066,9 +4206,10 @@ class R2CCoordinationHub:
             "receivedTs": now_ms,
         }
         try:
-            await self._writer.send_text(websocket, json.dumps({
-                key: value for key, value in schedule.items() if value is not None
-            }))
+            with self._span("traffic.schedule_send"):
+                await self._writer.send_text(websocket, json.dumps({
+                    key: value for key, value in schedule.items() if value is not None
+                }))
         except Exception as exc:
             logger.warning(
                 "peer traffic schedule failed for %s/%s: %s",
@@ -4076,7 +4217,8 @@ class R2CCoordinationHub:
                 from_zone_id,
                 exc,
             )
-        await self._writer.broadcast([zone.websocket for zone in recipients], text)
+        with self._span("traffic.broadcast"):
+            await self._writer.broadcast([zone.websocket for zone in recipients], text)
         logger.info(
             "r2c peer_traffic_shadow: map=%s remote_id=%s source=%s from_zone=%s transport_age_ms=%s alt_age_ms=%s msl_alt_age_ms=%s candidate_recipients=%s recipients=%s alt_state=%s incident_pad_ft=%s nearest_distance_m=%s scheduling_pad_ft=%s shadow_interval_ms=%s",
             map_id,
@@ -4564,6 +4706,17 @@ class R2CCoordinationHub:
                                  connection_state: str = "",
                                  app_version: str = "",
                                  app_version_code: int = 0):
+        try:
+            safe = _env_flag("R2C_SAFE_ZONE_UPSERT")
+        except NameError:
+            safe = False
+        if safe:
+            await self._upsert_zone_state_conflict(
+                organization_id, map_id, zone_id, guid, name, lat, lng, caltopo_rtt_ms,
+                online, last_seen_ms, reported_map_id, coordination_mode, connection_state,
+                app_version, app_version_code,
+            )
+            return
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(R2CZoneState).where(
@@ -4588,6 +4741,38 @@ class R2CCoordinationHub:
             state.online = online
             state.connection_state = connection_state or ("online" if online else "disconnected")
             state.last_seen_ms = last_seen_ms
+            await session.commit()
+
+    async def _upsert_zone_state_conflict(
+            self, organization_id: str, map_id: str, zone_id: str, guid: str, name: str,
+            lat: float, lng: float, caltopo_rtt_ms: int, online: bool, last_seen_ms: int,
+            reported_map_id: str, coordination_mode: str, connection_state: str,
+            app_version: str, app_version_code: int):
+        """One row per (org, map, zone). A second hello updates it instead of raising."""
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        resolved_state = connection_state or ("online" if online else "disconnected")
+        values = dict(
+            organization_id=organization_id, map_id=map_id, zone_id=zone_id, guid=guid,
+            name=name, lat=lat, lng=lng, caltopo_rtt_ms=caltopo_rtt_ms, online=online,
+            last_seen_ms=last_seen_ms, reported_map_id=reported_map_id,
+            coordination_mode=coordination_mode, connection_state=resolved_state,
+            app_version=app_version, app_version_code=app_version_code,
+        )
+        async with AsyncSessionLocal() as session:
+            dialect = session.get_bind().dialect.name
+            insert = pg_insert if dialect == "postgresql" else sqlite_insert
+            statement = insert(R2CZoneState).values(**values)
+            update_values = {
+                column: statement.excluded[column]
+                for column in values
+                if column not in {"organization_id", "map_id", "zone_id"}
+            }
+            await session.execute(statement.on_conflict_do_update(
+                index_elements=["organization_id", "map_id", "zone_id"],
+                set_=update_values,
+            ))
             await session.commit()
 
     async def _delete_zone_state(self, organization_id: str, map_id: str, zone_id: str):
@@ -5619,9 +5804,11 @@ async def create_flight_and_archive(
     remote_id = normalize_remote_id(spec.get('rid'))
 
     # Do not hold a database connection while waiting on the weather worker.
-    weather = await lookup_flight_weather(flight_inputs["start_ts_sec"], flight_inputs["start_lat"], flight_inputs["start_lng"])
+    with _loadtest_span("upload.weather"):
+        weather = await lookup_flight_weather(flight_inputs["start_ts_sec"], flight_inputs["start_lat"], flight_inputs["start_lng"])
 
-    result = await find_overlap(
+    with _loadtest_span("upload.overlap"):
+        result = await find_overlap(
         db,
         start_time,
         end_time,
@@ -5664,15 +5851,17 @@ async def create_flight_and_archive(
         distance_mi=flight_inputs["distance"],
     )
     db.add(new_flight)
-    await db.flush()
+    with _loadtest_span("upload.flush"):
+        await db.flush()
 
-    archive_relpath, archive_path = await archive_flight_log(
-        title,
-        flight_inputs["localized_start_time"],
-        data,
-        new_flight.id,
-        credential.designator if credential else None,
-    )
+    with _loadtest_span("upload.archive"):
+        archive_relpath, archive_path = await archive_flight_log(
+            title,
+            flight_inputs["localized_start_time"],
+            data,
+            new_flight.id,
+            credential.designator if credential else None,
+        )
     new_flight.archive_relpath = archive_relpath
     await flight_readiness_records.preserve_submission(control_plane_store, new_flight, data)
     return new_flight, archive_path
@@ -6305,9 +6494,16 @@ async def upload(
         db: AsyncSession = Depends(get_db),
         credential: Optional[DeviceCredentialRecord] = Depends(get_api_key)):
     credential = require_scoped_upload_credential(designator, credential)
-    raw_body = await request.body()
+    capped = _env_flag("R2C_CAP_UPLOAD_BODY")
+    with _loadtest_span("upload.body"):
+        if capped:
+            raw_body = await _read_capped_body(request, MAX_ARCHIVE_UPLOAD_BYTES)
+        else:
+            raw_body = await request.body()
     try:
-        data = await request.json()
+        with _loadtest_span("upload.parse"):
+            # A capped read already consumed the stream, so parse those bytes.
+            data = json.loads(raw_body) if capped else await request.json()
         if not data:
             raise ValueError("No data received in payload")
         sar_id = data.get("sar_id", "unknown")
@@ -6319,24 +6515,29 @@ async def upload(
         error_details = traceback.format_exc()
         logger.error(f"Exception in /upload:\n{error_details}")
         raise HTTPException(status_code=500, detail=f"Server Error: {str(e)}")
-    flight_inputs = await extract_flight_inputs_from_geojson(data)
+    with _loadtest_span("upload.extract"):
+        flight_inputs = await extract_flight_inputs_from_geojson(data)
     async with serialized_flight_submission(
             flight_inputs["spec"].get("rid"),
             flight_inputs["spec"].get("sar_id"),
             organization_id=credential.organization_id if credential else None,
     ):
-        new_flight, archive_path = await create_flight_and_archive(
-            db,
-            data,
-            flight_inputs,
-            credential,
-        )
-        await db.commit()
+        with _loadtest_span("upload.create"):
+            new_flight, archive_path = await create_flight_and_archive(
+                db,
+                data,
+                flight_inputs,
+                credential,
+            )
+        with _loadtest_span("upload.commit"):
+            await db.commit()
 
-    archive_size = await run_bounded_sync(
-        _flight_log_size, archive_path, limiter=_archive_workers,
-    )
-    await meter_organization_usage(
+    with _loadtest_span("upload.archive_size"):
+        archive_size = await run_bounded_sync(
+            _flight_log_size, archive_path, limiter=_archive_workers,
+        )
+    with _loadtest_span("upload.meter"):
+        await meter_organization_usage(
         credential,
         compute_units=Decimal("1"),
         database_units=Decimal("1"),
@@ -13236,7 +13437,11 @@ async def serve_r2c_websocket(
                         })
                         await websocket.close(code=1008, reason="Upgrade required")
                         return
-                await r2c_hub.handle_message(websocket, payload)
+                kind = str(payload.get("type") or "other")
+                if kind not in {"hello", "heartbeat", "sighting", "traffic_position"}:
+                    kind = "other"
+                with _loadtest_span(f"ws.{kind}"):
+                    await r2c_hub.handle_message(websocket, payload)
     except WebSocketDisconnect as e:
         conn_info = await r2c_hub.get_connection_debug_info(websocket)
         close_code = getattr(e, "code", "")

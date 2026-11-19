@@ -1,0 +1,437 @@
+{
+  "scenario": "C-lockstep-16-on",
+  "backend": "postgres",
+  "orgs": 10,
+  "hot_orgs": 3,
+  "tablets_per_hot": 16,
+  "profile": "idle",
+  "reconnect": "lockstep",
+  "duration_s": 361.146,
+  "concurrency_limit": 80,
+  "cpu_pinned_to_one_core": true,
+  "memory_limit": "1GiB",
+  "oom": false,
+  "cpu_percent_of_one_core": 7.3,
+  "server_rss_mb": 175.8,
+  "launch_to_first_hello_s": null,
+  "connects": 124,
+  "connect_failures": 62,
+  "hello_acks": 124,
+  "parked": 14,
+  "ack_timeouts": 0,
+  "http_429": 0,
+  "http_errors": 1200,
+  "notam_statuses": [
+    503,
+    599
+  ],
+  "hello_ack": {
+    "count": 124,
+    "p50_ms": 97.252,
+    "p95_ms": 171.091,
+    "p99_ms": 189.455,
+    "max_ms": 221.289
+  },
+  "heartbeat_ack": {
+    "count": 796,
+    "p50_ms": 5.984,
+    "p95_ms": 200.001,
+    "p99_ms": 358.717,
+    "max_ms": 374.868
+  },
+  "upload": {
+    "count": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null
+  },
+  "reconnect_from_close": {
+    "count": 62,
+    "p50_ms": 2108.819,
+    "p95_ms": 2220.998,
+    "p99_ms": 2225.147,
+    "max_ms": 2230.643
+  },
+  "reconnect_from_listen": {
+    "count": 62,
+    "p50_ms": 2068.099,
+    "p95_ms": 2227.753,
+    "p99_ms": 2231.851,
+    "max_ms": 2236.8
+  },
+  "queue_wait": {
+    "count": 64,
+    "p50_ms": 172.738,
+    "p95_ms": 387.073,
+    "p99_ms": 406.352,
+    "max_ms": 414.436
+  },
+  "admission_rejected": 0,
+  "event_loop_lag": {
+    "count": 6829,
+    "p50_ms": 0.574,
+    "p95_ms": 1.677,
+    "p99_ms": 2.136,
+    "max_ms": 73.292
+  },
+  "lock_wait": {
+    "hub": {
+      "count": 40763,
+      "p50_ms": 0.0,
+      "p95_ms": 0.001,
+      "p99_ms": 0.002,
+      "max_ms": 0.027
+    },
+    "submission": {
+      "count": 0,
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null
+    },
+    "submission_guard": {
+      "count": 0,
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null
+    },
+    "other": {
+      "count": 71543,
+      "p50_ms": 0.0,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "max_ms": 0.161
+    }
+  },
+  "spans": {
+    "heartbeat.ack_send": {
+      "count": 765,
+      "p50_ms": 0.13,
+      "p95_ms": 0.182,
+      "p99_ms": 0.205,
+      "max_ms": 0.251
+    },
+    "heartbeat.ack_send.burst": {
+      "count": 69,
+      "p50_ms": 0.107,
+      "p95_ms": 0.169,
+      "p99_ms": 0.186,
+      "max_ms": 0.196
+    },
+    "heartbeat.ack_send.steady": {
+      "count": 696,
+      "p50_ms": 0.133,
+      "p95_ms": 0.182,
+      "p99_ms": 0.207,
+      "max_ms": 0.251
+    },
+    "heartbeat.owner_upserts": {
+      "count": 765,
+      "p50_ms": 0.0,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "max_ms": 0.001
+    },
+    "heartbeat.owner_upserts.burst": {
+      "count": 69,
+      "p50_ms": 0.0,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "max_ms": 0.001
+    },
+    "heartbeat.owner_upserts.steady": {
+      "count": 696,
+      "p50_ms": 0.0,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "max_ms": 0.001
+    },
+    "heartbeat.zone_broadcast": {
+      "count": 765,
+      "p50_ms": 0.05,
+      "p95_ms": 0.075,
+      "p99_ms": 2.301,
+      "max_ms": 6.662
+    },
+    "heartbeat.zone_broadcast.burst": {
+      "count": 69,
+      "p50_ms": 0.048,
+      "p95_ms": 1.707,
+      "p99_ms": 3.62,
+      "max_ms": 6.662
+    },
+    "heartbeat.zone_broadcast.steady": {
+      "count": 696,
+      "p50_ms": 0.05,
+      "p95_ms": 0.071,
+      "p99_ms": 2.294,
+      "max_ms": 4.989
+    },
+    "heartbeat.zone_upsert": {
+      "count": 765,
+      "p50_ms": 4.501,
+      "p95_ms": 14.762,
+      "p99_ms": 43.523,
+      "max_ms": 71.293
+    },
+    "heartbeat.zone_upsert.burst": {
+      "count": 69,
+      "p50_ms": 13.071,
+      "p95_ms": 46.303,
+      "p99_ms": 67.403,
+      "max_ms": 69.398
+    },
+    "heartbeat.zone_upsert.steady": {
+      "count": 696,
+      "p50_ms": 4.289,
+      "p95_ms": 11.315,
+      "p99_ms": 16.179,
+      "max_ms": 71.293
+    },
+    "hello.ack_send": {
+      "count": 62,
+      "p50_ms": 0.103,
+      "p95_ms": 0.159,
+      "p99_ms": 0.342,
+      "max_ms": 0.498
+    },
+    "hello.ack_send.burst": {
+      "count": 62,
+      "p50_ms": 0.103,
+      "p95_ms": 0.159,
+      "p99_ms": 0.342,
+      "max_ms": 0.498
+    },
+    "hello.config": {
+      "count": 62,
+      "p50_ms": 4.81,
+      "p95_ms": 30.736,
+      "p99_ms": 49.508,
+      "max_ms": 62.236
+    },
+    "hello.config.burst": {
+      "count": 62,
+      "p50_ms": 4.81,
+      "p95_ms": 30.736,
+      "p99_ms": 49.508,
+      "max_ms": 62.236
+    },
+    "hello.zone_broadcast": {
+      "count": 62,
+      "p50_ms": 7.256,
+      "p95_ms": 18.162,
+      "p99_ms": 18.227,
+      "max_ms": 18.228
+    },
+    "hello.zone_broadcast.burst": {
+      "count": 62,
+      "p50_ms": 7.256,
+      "p95_ms": 18.162,
+      "p99_ms": 18.227,
+      "max_ms": 18.228
+    },
+    "hello.zone_upsert": {
+      "count": 62,
+      "p50_ms": 28.49,
+      "p95_ms": 66.639,
+      "p99_ms": 70.646,
+      "max_ms": 74.756
+    },
+    "hello.zone_upsert.burst": {
+      "count": 62,
+      "p50_ms": 28.49,
+      "p95_ms": 66.639,
+      "p99_ms": 70.646,
+      "max_ms": 74.756
+    },
+    "pool.connect": {
+      "count": 946,
+      "p50_ms": 2.106,
+      "p95_ms": 18.088,
+      "p99_ms": 33.041,
+      "max_ms": 69.064
+    },
+    "pool.connect.burst": {
+      "count": 196,
+      "p50_ms": 9.269,
+      "p95_ms": 32.403,
+      "p99_ms": 37.073,
+      "max_ms": 46.698
+    },
+    "pool.connect.steady": {
+      "count": 750,
+      "p50_ms": 1.691,
+      "p95_ms": 7.511,
+      "p99_ms": 11.763,
+      "max_ms": 69.064
+    },
+    "traffic.broadcast": {
+      "count": 16536,
+      "p50_ms": 0.822,
+      "p95_ms": 2.707,
+      "p99_ms": 4.731,
+      "max_ms": 66.884
+    },
+    "traffic.broadcast.burst": {
+      "count": 1310,
+      "p50_ms": 1.261,
+      "p95_ms": 3.647,
+      "p99_ms": 6.281,
+      "max_ms": 8.457
+    },
+    "traffic.broadcast.steady": {
+      "count": 15226,
+      "p50_ms": 0.806,
+      "p95_ms": 2.573,
+      "p99_ms": 4.488,
+      "max_ms": 66.884
+    },
+    "traffic.schedule_send": {
+      "count": 16536,
+      "p50_ms": 0.102,
+      "p95_ms": 0.14,
+      "p99_ms": 0.165,
+      "max_ms": 0.666
+    },
+    "traffic.schedule_send.burst": {
+      "count": 1310,
+      "p50_ms": 0.095,
+      "p95_ms": 0.141,
+      "p99_ms": 0.197,
+      "max_ms": 0.511
+    },
+    "traffic.schedule_send.steady": {
+      "count": 15226,
+      "p50_ms": 0.104,
+      "p95_ms": 0.14,
+      "p99_ms": 0.163,
+      "max_ms": 0.666
+    },
+    "ws.heartbeat": {
+      "count": 765,
+      "p50_ms": 4.829,
+      "p95_ms": 15.307,
+      "p99_ms": 43.742,
+      "max_ms": 71.526
+    },
+    "ws.heartbeat.burst": {
+      "count": 69,
+      "p50_ms": 13.372,
+      "p95_ms": 48.973,
+      "p99_ms": 67.6,
+      "max_ms": 69.627
+    },
+    "ws.heartbeat.steady": {
+      "count": 696,
+      "p50_ms": 4.622,
+      "p95_ms": 11.662,
+      "p99_ms": 17.032,
+      "max_ms": 71.526
+    },
+    "ws.hello": {
+      "count": 62,
+      "p50_ms": 87.362,
+      "p95_ms": 171.744,
+      "p99_ms": 188.658,
+      "max_ms": 189.669
+    },
+    "ws.hello.burst": {
+      "count": 62,
+      "p50_ms": 87.362,
+      "p95_ms": 171.744,
+      "p99_ms": 188.658,
+      "max_ms": 189.669
+    },
+    "ws.other": {
+      "count": 14,
+      "p50_ms": 21.236,
+      "p95_ms": 26.264,
+      "p99_ms": 27.855,
+      "max_ms": 28.253
+    },
+    "ws.other.steady": {
+      "count": 14,
+      "p50_ms": 21.236,
+      "p95_ms": 26.264,
+      "p99_ms": 27.855,
+      "max_ms": 28.253
+    },
+    "ws.sighting": {
+      "count": 22102,
+      "p50_ms": 0.05,
+      "p95_ms": 0.098,
+      "p99_ms": 0.117,
+      "max_ms": 2.904
+    },
+    "ws.sighting.burst": {
+      "count": 1739,
+      "p50_ms": 0.046,
+      "p95_ms": 0.1,
+      "p99_ms": 0.133,
+      "max_ms": 0.22
+    },
+    "ws.sighting.steady": {
+      "count": 20363,
+      "p50_ms": 0.05,
+      "p95_ms": 0.098,
+      "p99_ms": 0.115,
+      "max_ms": 2.904
+    },
+    "ws.traffic_position": {
+      "count": 16536,
+      "p50_ms": 1.099,
+      "p95_ms": 2.956,
+      "p99_ms": 4.984,
+      "max_ms": 67.183
+    },
+    "ws.traffic_position.burst": {
+      "count": 1310,
+      "p50_ms": 1.5,
+      "p95_ms": 3.881,
+      "p99_ms": 6.503,
+      "max_ms": 8.726
+    },
+    "ws.traffic_position.steady": {
+      "count": 15226,
+      "p50_ms": 1.085,
+      "p95_ms": 2.855,
+      "p99_ms": 4.74,
+      "max_ms": 67.183
+    }
+  },
+  "optimizations": true,
+  "notes": [
+    "Weather is stubbed. FAA credentials are absent, so NOTAM fetches fail closed and clients retry every 15 s.",
+    "The tracker process is in cgroup r2c-loadtest: memory.max=1GiB, swap max=0, cpu.max=1.",
+    "Flags on: R2C_SKIP_EMPTY_DEVICE_NAME, R2C_CACHE_ORG_CONFIG, R2C_DB_POOL_SIZE=20, R2C_DB_MAX_OVERFLOW=40, R2C_SAFE_ZONE_UPSERT, R2C_CAP_UPLOAD_BODY.",
+    "Server CPU was pinned to one core."
+  ],
+  "client_closes": {
+    "before_hello": 0,
+    "after_hello": 62,
+    "age_s": {
+      "count": 62,
+      "p50_ms": 2479.787,
+      "p95_ms": 2682.982,
+      "p99_ms": 2685.938,
+      "max_ms": 2687.034
+    },
+    "reasons": {
+      "ConnectionClosedError code=1012 reason=": 62
+    }
+  },
+  "open_sockets_planned": 62,
+  "server_log": {
+    "broadcast_retired_lines": 14,
+    "broadcast_retired_sockets": 27,
+    "closes": {
+      "code=1012 reason=": 62,
+      "code=1000 reason=": 43
+    },
+    "errors": {
+      "WebSocket is not connected. Need to call \"accept\" first.": 19
+    }
+  }
+}
