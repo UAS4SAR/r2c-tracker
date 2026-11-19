@@ -1,0 +1,425 @@
+{
+  "scenario": "B-6",
+  "backend": "postgres",
+  "orgs": 10,
+  "hot_orgs": 3,
+  "tablets_per_hot": 6,
+  "profile": "idle",
+  "reconnect": "lockstep",
+  "duration_s": 360.151,
+  "concurrency_limit": 80,
+  "cpu_pinned_to_one_core": true,
+  "memory_limit": "1GiB",
+  "oom": false,
+  "cpu_percent_of_one_core": 2.5,
+  "server_rss_mb": 164.6,
+  "launch_to_first_hello_s": null,
+  "connects": 32,
+  "connect_failures": 0,
+  "hello_acks": 32,
+  "parked": 14,
+  "ack_timeouts": 0,
+  "http_429": 0,
+  "http_errors": 432,
+  "notam_statuses": [
+    503
+  ],
+  "hello_ack": {
+    "count": 32,
+    "p50_ms": 185.493,
+    "p95_ms": 202.807,
+    "p99_ms": 210.315,
+    "max_ms": 212.22
+  },
+  "heartbeat_ack": {
+    "count": 300,
+    "p50_ms": 4.853,
+    "p95_ms": 219.165,
+    "p99_ms": 291.685,
+    "max_ms": 386.381
+  },
+  "upload": {
+    "count": 3,
+    "p50_ms": 213.18,
+    "p95_ms": 251.895,
+    "p99_ms": 255.336,
+    "max_ms": 256.196
+  },
+  "reconnect_from_close": {
+    "count": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null
+  },
+  "reconnect_from_listen": {
+    "count": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null
+  },
+  "queue_wait": {
+    "count": 1,
+    "p50_ms": 6.754,
+    "p95_ms": 6.754,
+    "p99_ms": 6.754,
+    "max_ms": 6.754
+  },
+  "admission_rejected": 0,
+  "event_loop_lag": {
+    "count": 7060,
+    "p50_ms": 0.356,
+    "p95_ms": 1.316,
+    "p99_ms": 1.974,
+    "max_ms": 26.943
+  },
+  "lock_wait": {
+    "hub": {
+      "count": 15745,
+      "p50_ms": 0.001,
+      "p95_ms": 0.002,
+      "p99_ms": 0.002,
+      "max_ms": 0.024
+    },
+    "submission": {
+      "count": 3,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "max_ms": 0.0
+    },
+    "submission_guard": {
+      "count": 3,
+      "p50_ms": 0.001,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "max_ms": 0.001
+    },
+    "other": {
+      "count": 15257,
+      "p50_ms": 0.001,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "max_ms": 0.148
+    }
+  },
+  "notes": [
+    "Weather is stubbed. FAA credentials are absent, so NOTAM fetches fail closed and clients retry every 15 s.",
+    "The tracker process is in cgroup r2c-loadtest: memory.max=1GiB, swap max=0, cpu.max=1.",
+    "Server CPU was pinned to one core."
+  ],
+  "client_closes": {
+    "before_hello": 0,
+    "after_hello": 0,
+    "age_s": {
+      "count": 0,
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null
+    },
+    "reasons": {}
+  },
+  "tablets": [
+    {
+      "designator": "L000",
+      "zone": "hot-0",
+      "platform": "android",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L000",
+      "zone": "hot-1",
+      "platform": "ios",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L000",
+      "zone": "hot-2",
+      "platform": "android",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L000",
+      "zone": "hot-3",
+      "platform": "ios",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L000",
+      "zone": "hot-4",
+      "platform": "android",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L000",
+      "zone": "hot-5",
+      "platform": "ios",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L001",
+      "zone": "hot-0",
+      "platform": "android",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L001",
+      "zone": "hot-1",
+      "platform": "ios",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L001",
+      "zone": "hot-2",
+      "platform": "android",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L001",
+      "zone": "hot-3",
+      "platform": "ios",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L001",
+      "zone": "hot-4",
+      "platform": "android",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L001",
+      "zone": "hot-5",
+      "platform": "ios",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L002",
+      "zone": "hot-0",
+      "platform": "android",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L002",
+      "zone": "hot-1",
+      "platform": "ios",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L002",
+      "zone": "hot-2",
+      "platform": "android",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L002",
+      "zone": "hot-3",
+      "platform": "ios",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L002",
+      "zone": "hot-4",
+      "platform": "android",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L002",
+      "zone": "hot-5",
+      "platform": "ios",
+      "role": "hot",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L003",
+      "zone": "quiet-android",
+      "platform": "android",
+      "role": "idle",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L003",
+      "zone": "quiet-ios",
+      "platform": "ios",
+      "role": "idle",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L004",
+      "zone": "quiet-android",
+      "platform": "android",
+      "role": "idle",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L004",
+      "zone": "quiet-ios",
+      "platform": "ios",
+      "role": "idle",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L005",
+      "zone": "quiet-android",
+      "platform": "android",
+      "role": "idle",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L005",
+      "zone": "quiet-ios",
+      "platform": "ios",
+      "role": "idle",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L006",
+      "zone": "quiet-android",
+      "platform": "android",
+      "role": "idle",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L006",
+      "zone": "quiet-ios",
+      "platform": "ios",
+      "role": "idle",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L007",
+      "zone": "quiet-android",
+      "platform": "android",
+      "role": "idle",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L007",
+      "zone": "quiet-ios",
+      "platform": "ios",
+      "role": "idle",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L008",
+      "zone": "quiet-android",
+      "platform": "android",
+      "role": "idle",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L008",
+      "zone": "quiet-ios",
+      "platform": "ios",
+      "role": "idle",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L009",
+      "zone": "quiet-android",
+      "platform": "android",
+      "role": "idle",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    },
+    {
+      "designator": "L009",
+      "zone": "quiet-ios",
+      "platform": "ios",
+      "role": "idle",
+      "connects": 1,
+      "failures": 0,
+      "hellos": 1
+    }
+  ],
+  "open_sockets_planned": 32,
+  "server_log": {
+    "broadcast_retired_lines": 14,
+    "broadcast_retired_sockets": 21,
+    "closes": {
+      "code=1000 reason=": 17
+    },
+    "errors": {
+      "WebSocket is not connected. Need to call \"accept\" first.": 15
+    }
+  }
+}
