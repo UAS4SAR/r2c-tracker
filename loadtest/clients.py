@@ -45,6 +45,10 @@ class TabletStats:
     reconnect_from_listen_s: list[float] = field(default_factory=list)
     launch_to_hello_s: list[float] = field(default_factory=list)
     notam_status: list[int] = field(default_factory=list)
+    close_reasons: dict = field(default_factory=dict)
+    closes_before_hello: int = 0
+    closes_after_hello: int = 0
+    close_age_s: list[float] = field(default_factory=list)
 
 
 class Admission:
@@ -128,6 +132,8 @@ class Tablet:
             first = False
             if self.phase.stop.is_set():
                 return
+            self._saw_hello = False
+            self._opened_at = None
             if not await self.admission.acquire():
                 self.stats.http_429 += 1
                 self.stats.connect_failures += 1
@@ -150,9 +156,10 @@ class Tablet:
                     continue
                 if outcome == "ack-timeout":
                     self.stats.ack_timeouts += 1
-            except Exception:
+            except Exception as exc:
                 self.stats.connect_failures += 1
                 closed_at = time.perf_counter()
+                self._note_close(exc, closed_at)
             finally:
                 if self._held:
                     self.admission.release()
@@ -177,6 +184,7 @@ class Tablet:
         ) as ws:
             self.stats.connects += 1
             opened = time.perf_counter()
+            self._opened_at = opened
             generation = self.phase.generation
             if spec.platform == "android":
                 self._step = 0
@@ -224,6 +232,7 @@ class Tablet:
                     kind = message.get("type")
                     if kind == "hello_ack" and not hello_ok:
                         hello_ok = True
+                        self._saw_hello = True
                         self.stats.hello_acks += 1
                         self.stats.hello_ack_s.append(now_p - hello_sent)
                         if spec.platform == "ios":
@@ -274,6 +283,17 @@ class Tablet:
                     self._uploaded = True
                     await self._upload()
         return "closed"
+
+    def _note_close(self, exc: BaseException, closed_at: float) -> None:
+        key = _failure_key(exc)
+        self.stats.close_reasons[key] = self.stats.close_reasons.get(key, 0) + 1
+        if getattr(self, "_saw_hello", False):
+            self.stats.closes_after_hello += 1
+        else:
+            self.stats.closes_before_hello += 1
+        opened = getattr(self, "_opened_at", None)
+        if opened is not None:
+            self.stats.close_age_s.append(closed_at - opened)
 
     async def _send_heartbeat(self, ws, seq: int) -> None:
         await ws.send(json.dumps({
@@ -368,6 +388,19 @@ class Tablet:
             self.stats.http_errors += 1
         finally:
             self.admission.release()
+
+
+def _failure_key(exc: BaseException) -> str:
+    rcvd = getattr(exc, "rcvd", None)
+    if rcvd is not None:
+        code = getattr(rcvd, "code", "")
+        reason = getattr(rcvd, "reason", "") or ""
+        return f"{type(exc).__name__} code={code} reason={reason}"
+    response = getattr(exc, "response", None)
+    if response is not None:
+        return f"{type(exc).__name__} http={getattr(response, 'status_code', '')}"
+    text = str(exc).splitlines()[0][:120] if str(exc) else ""
+    return f"{type(exc).__name__} {text}".strip()
 
 
 def _to_mono(perf_deadline: float, opened_perf: float, now_m: float, now_p: float) -> float:

@@ -321,12 +321,14 @@ def _specs(organizations: list[dict], tokens: dict[tuple[str, str], str], zones:
                     name = f"hot-{zone * drones_per_zone + drone}"
                     do_upload = upload and not upload_assigned
                     upload_assigned = upload_assigned or do_upload
+                    # RID2Caltopo sends the device guid as zoneId. One tablet, one
+                    # websocket. Geographic zones stay in lat/lng and peer_remote_ids.
                     specs.append((TabletSpec(
                         designator=designator,
                         token=tokens[(designator, name)],
                         platform=org["platforms"][zone * drones_per_zone + drone],
                         role="hot",
-                        zone_id=f"z{zone}",
+                        zone_id=name,
                         remote_id=remote,
                         peer_remote_ids=tuple(item for item in remotes if item != remote),
                         lat=lat + drone * 0.0001,
@@ -466,6 +468,8 @@ def summarize(config: RunConfig, tablets: list[Tablet], server: TrackerProcess, 
         "event_loop_lag": latency_block(lags) if config.instrument else None,
         "lock_wait": _lock_blocks(instrument) if config.instrument else None,
         "notes": notes,
+        "client_closes": _client_closes(tablets),
+        "tablets": _tablet_rows(tablets),
     }
 
 
@@ -541,6 +545,7 @@ async def execute(config: RunConfig, directory: Path) -> dict:
         elapsed = time.perf_counter() - started
         result = summarize(config, tablets, server, elapsed, notes)
         result["open_sockets_planned"] = len(tablets)
+        result["server_log"] = _server_log_summary(server.log_path)
         return result
     finally:
         server.stop()
@@ -625,6 +630,85 @@ def markdown_report(results: list[dict]) -> str:
         lines.append("```")
         lines.append("")
     return "\n".join(lines) + "\n"
+
+
+def _client_closes(tablets: list[Tablet]) -> dict:
+    reasons: dict[str, int] = {}
+    ages: list[float] = []
+    before = 0
+    after = 0
+    for tablet in tablets:
+        before += tablet.stats.closes_before_hello
+        after += tablet.stats.closes_after_hello
+        ages.extend(tablet.stats.close_age_s)
+        for key, count in tablet.stats.close_reasons.items():
+            reasons[key] = reasons.get(key, 0) + count
+    return {
+        "before_hello": before,
+        "after_hello": after,
+        "age_s": latency_block(ages),
+        "reasons": dict(sorted(reasons.items(), key=lambda item: -item[1])),
+    }
+
+
+def _tablet_rows(tablets: list[Tablet]) -> list[dict]:
+    rows = []
+    for tablet in tablets:
+        spec = tablet.spec
+        rows.append({
+            "designator": spec.designator,
+            "zone": spec.zone_id,
+            "platform": spec.platform,
+            "role": spec.role,
+            "connects": tablet.stats.connects,
+            "failures": tablet.stats.connect_failures,
+            "hellos": tablet.stats.hello_acks,
+        })
+    return rows
+
+
+def _server_log_summary(path: Path) -> dict:
+    retired = 0
+    retired_sockets = 0
+    closed: dict[str, int] = {}
+    errors: dict[str, int] = {}
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        if "broadcast retired" in line:
+            retired += 1
+            parts = line.split()
+            try:
+                retired_sockets += int(parts[parts.index("retired") + 1])
+            except (ValueError, IndexError):
+                pass
+        elif "r2c websocket closed:" in line:
+            code = _between(line, "code=", " reason=")
+            reason = _between(line, "reason=", " map=")
+            key = f"code={code} reason={reason}"
+            closed[key] = closed.get(key, 0) + 1
+        elif "r2c websocket error:" in line:
+            error = _between(line, "error=", " map=")
+            errors[error[:160]] = errors.get(error[:160], 0) + 1
+    return {
+        "broadcast_retired_lines": retired,
+        "broadcast_retired_sockets": retired_sockets,
+        "closes": dict(sorted(closed.items(), key=lambda item: -item[1])[:12]),
+        "errors": dict(sorted(errors.items(), key=lambda item: -item[1])[:12]),
+    }
+
+
+def _between(line: str, start_label: str, end_label: str) -> str:
+    start = line.find(start_label)
+    if start < 0:
+        return ""
+    start += len(start_label)
+    end = line.find(end_label, start)
+    if end < 0:
+        return line[start:].strip()
+    return line[start:end].strip()
 
 
 def _one(block: dict) -> str:
