@@ -19,9 +19,57 @@ _waits: dict[str, list[float]] = {
     "other": [],
 }
 _lags: list[float] = []
+_spans: dict[str, list[float]] = {}
 _guard = threading.Lock()
 _installed = False
 _MAX_SAMPLES = 200_000
+_started = time.perf_counter()
+_BURST_S = 30.0
+
+
+class span:
+    """Record wall time, including awaits inside the block."""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.started = 0.0
+
+    def __enter__(self):
+        self.started = time.perf_counter()
+        return self
+
+    def __exit__(self, *_exc):
+        elapsed = time.perf_counter() - self.started
+        phase = "burst" if self.started - _started < _BURST_S else "steady"
+        with _guard:
+            for key in (self.name, f"{self.name}.{phase}"):
+                bucket = _spans.setdefault(key, [])
+                if len(bucket) < _MAX_SAMPLES:
+                    bucket.append(elapsed)
+        return False
+
+
+def record(name: str, seconds: float) -> None:
+    phase = "burst" if time.perf_counter() - _started < _BURST_S else "steady"
+    with _guard:
+        for key in (name, f"{name}.{phase}"):
+            bucket = _spans.setdefault(key, [])
+            if len(bucket) < _MAX_SAMPLES:
+                bucket.append(seconds)
+
+
+def install_pool_timing(async_engine) -> None:
+    """Time QueuePool.connect, which is the wait for a free connection."""
+    pool = async_engine.sync_engine.pool
+    original = pool.connect
+
+    def timed_connect():
+        started = time.perf_counter()
+        connection = original()
+        record("pool.connect", time.perf_counter() - started)
+        return connection
+
+    pool.connect = timed_connect
 
 
 def _classify_lock() -> str:
@@ -67,6 +115,7 @@ def snapshot() -> dict:
                 kind: list(samples) for kind, samples in _waits.items()
             },
             "event_loop_lag_s": list(_lags),
+            "spans_s": {name: list(samples) for name, samples in _spans.items()},
         }
 
 

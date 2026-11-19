@@ -1,0 +1,381 @@
+{
+  "scenario": "A-80-on",
+  "backend": "postgres",
+  "orgs": 80,
+  "hot_orgs": 0,
+  "tablets_per_hot": 6,
+  "profile": "idle",
+  "reconnect": "lockstep",
+  "duration_s": 360.17,
+  "concurrency_limit": 80,
+  "cpu_pinned_to_one_core": true,
+  "memory_limit": "1GiB",
+  "oom": false,
+  "cpu_percent_of_one_core": 1.2,
+  "server_rss_mb": 174.1,
+  "launch_to_first_hello_s": null,
+  "connects": 160,
+  "connect_failures": 320,
+  "hello_acks": 160,
+  "parked": 160,
+  "ack_timeouts": 0,
+  "http_429": 320,
+  "http_errors": 0,
+  "notam_statuses": [],
+  "hello_ack": {
+    "count": 160,
+    "p50_ms": 175.486,
+    "p95_ms": 242.75,
+    "p99_ms": 354.479,
+    "max_ms": 383.212
+  },
+  "heartbeat_ack": {
+    "count": 240,
+    "p50_ms": 9.746,
+    "p95_ms": 417.378,
+    "p99_ms": 460.575,
+    "max_ms": 499.923
+  },
+  "upload": {
+    "count": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null
+  },
+  "reconnect_from_close": {
+    "count": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null
+  },
+  "reconnect_from_listen": {
+    "count": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null
+  },
+  "queue_wait": {
+    "count": 320,
+    "p50_ms": 2000.73,
+    "p95_ms": 2001.071,
+    "p99_ms": 2001.078,
+    "max_ms": 2001.082
+  },
+  "admission_rejected": 320,
+  "event_loop_lag": {
+    "count": 7085,
+    "p50_ms": 0.238,
+    "p95_ms": 0.888,
+    "p99_ms": 1.481,
+    "max_ms": 61.818
+  },
+  "lock_wait": {
+    "hub": {
+      "count": 2984,
+      "p50_ms": 0.001,
+      "p95_ms": 0.001,
+      "p99_ms": 0.002,
+      "max_ms": 0.075
+    },
+    "submission": {
+      "count": 0,
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null
+    },
+    "submission_guard": {
+      "count": 0,
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null
+    },
+    "other": {
+      "count": 3122,
+      "p50_ms": 0.001,
+      "p95_ms": 0.001,
+      "p99_ms": 0.002,
+      "max_ms": 0.013
+    }
+  },
+  "spans": {
+    "heartbeat.ack_send": {
+      "count": 240,
+      "p50_ms": 0.111,
+      "p95_ms": 0.171,
+      "p99_ms": 0.18,
+      "max_ms": 0.266
+    },
+    "heartbeat.ack_send.burst": {
+      "count": 120,
+      "p50_ms": 0.114,
+      "p95_ms": 0.171,
+      "p99_ms": 0.177,
+      "max_ms": 0.198
+    },
+    "heartbeat.ack_send.steady": {
+      "count": 120,
+      "p50_ms": 0.111,
+      "p95_ms": 0.166,
+      "p99_ms": 0.18,
+      "max_ms": 0.266
+    },
+    "heartbeat.owner_upserts": {
+      "count": 240,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.001,
+      "max_ms": 0.001
+    },
+    "heartbeat.owner_upserts.burst": {
+      "count": 120,
+      "p50_ms": 0.0,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "max_ms": 0.001
+    },
+    "heartbeat.owner_upserts.steady": {
+      "count": 120,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.001,
+      "max_ms": 0.001
+    },
+    "heartbeat.zone_broadcast": {
+      "count": 240,
+      "p50_ms": 0.052,
+      "p95_ms": 10.127,
+      "p99_ms": 14.84,
+      "max_ms": 16.853
+    },
+    "heartbeat.zone_broadcast.burst": {
+      "count": 120,
+      "p50_ms": 0.053,
+      "p95_ms": 10.146,
+      "p99_ms": 13.085,
+      "max_ms": 16.853
+    },
+    "heartbeat.zone_broadcast.steady": {
+      "count": 120,
+      "p50_ms": 0.052,
+      "p95_ms": 9.703,
+      "p99_ms": 14.877,
+      "max_ms": 16.391
+    },
+    "heartbeat.zone_upsert": {
+      "count": 240,
+      "p50_ms": 7.355,
+      "p95_ms": 72.928,
+      "p99_ms": 94.91,
+      "max_ms": 100.253
+    },
+    "heartbeat.zone_upsert.burst": {
+      "count": 120,
+      "p50_ms": 6.818,
+      "p95_ms": 79.94,
+      "p99_ms": 98.291,
+      "max_ms": 100.253
+    },
+    "heartbeat.zone_upsert.steady": {
+      "count": 120,
+      "p50_ms": 8.093,
+      "p95_ms": 60.244,
+      "p99_ms": 67.04,
+      "max_ms": 68.072
+    },
+    "hello.ack_send": {
+      "count": 160,
+      "p50_ms": 0.096,
+      "p95_ms": 0.147,
+      "p99_ms": 0.165,
+      "max_ms": 0.244
+    },
+    "hello.ack_send.burst": {
+      "count": 80,
+      "p50_ms": 0.099,
+      "p95_ms": 0.147,
+      "p99_ms": 0.175,
+      "max_ms": 0.244
+    },
+    "hello.ack_send.steady": {
+      "count": 80,
+      "p50_ms": 0.094,
+      "p95_ms": 0.148,
+      "p99_ms": 0.163,
+      "max_ms": 0.173
+    },
+    "hello.config": {
+      "count": 160,
+      "p50_ms": 108.166,
+      "p95_ms": 193.045,
+      "p99_ms": 296.876,
+      "max_ms": 325.481
+    },
+    "hello.config.burst": {
+      "count": 80,
+      "p50_ms": 136.639,
+      "p95_ms": 244.136,
+      "p99_ms": 323.629,
+      "max_ms": 325.481
+    },
+    "hello.config.steady": {
+      "count": 80,
+      "p50_ms": 91.733,
+      "p95_ms": 192.742,
+      "p99_ms": 202.431,
+      "max_ms": 223.786
+    },
+    "hello.zone_broadcast": {
+      "count": 160,
+      "p50_ms": 12.907,
+      "p95_ms": 17.473,
+      "p99_ms": 27.364,
+      "max_ms": 33.32
+    },
+    "hello.zone_broadcast.burst": {
+      "count": 80,
+      "p50_ms": 12.847,
+      "p95_ms": 20.411,
+      "p99_ms": 32.894,
+      "max_ms": 33.32
+    },
+    "hello.zone_broadcast.steady": {
+      "count": 80,
+      "p50_ms": 12.933,
+      "p95_ms": 15.759,
+      "p99_ms": 15.917,
+      "max_ms": 15.935
+    },
+    "hello.zone_upsert": {
+      "count": 160,
+      "p50_ms": 46.114,
+      "p95_ms": 79.266,
+      "p99_ms": 97.488,
+      "max_ms": 99.323
+    },
+    "hello.zone_upsert.burst": {
+      "count": 80,
+      "p50_ms": 49.783,
+      "p95_ms": 86.6,
+      "p99_ms": 98.281,
+      "max_ms": 99.323
+    },
+    "hello.zone_upsert.steady": {
+      "count": 80,
+      "p50_ms": 40.833,
+      "p95_ms": 74.646,
+      "p99_ms": 81.626,
+      "max_ms": 82.333
+    },
+    "pool.connect": {
+      "count": 1128,
+      "p50_ms": 18.578,
+      "p95_ms": 57.862,
+      "p99_ms": 71.269,
+      "max_ms": 120.761
+    },
+    "pool.connect.burst": {
+      "count": 283,
+      "p50_ms": 20.862,
+      "p95_ms": 44.634,
+      "p99_ms": 47.573,
+      "max_ms": 49.667
+    },
+    "pool.connect.steady": {
+      "count": 845,
+      "p50_ms": 17.901,
+      "p95_ms": 60.909,
+      "p99_ms": 87.887,
+      "max_ms": 120.761
+    },
+    "ws.heartbeat": {
+      "count": 240,
+      "p50_ms": 7.646,
+      "p95_ms": 81.443,
+      "p99_ms": 104.467,
+      "max_ms": 110.537
+    },
+    "ws.heartbeat.burst": {
+      "count": 120,
+      "p50_ms": 7.079,
+      "p95_ms": 88.941,
+      "p99_ms": 109.245,
+      "max_ms": 110.537
+    },
+    "ws.heartbeat.steady": {
+      "count": 120,
+      "p50_ms": 8.317,
+      "p95_ms": 72.133,
+      "p99_ms": 75.802,
+      "max_ms": 76.337
+    },
+    "ws.hello": {
+      "count": 160,
+      "p50_ms": 274.649,
+      "p95_ms": 376.46,
+      "p99_ms": 447.608,
+      "max_ms": 465.543
+    },
+    "ws.hello.burst": {
+      "count": 80,
+      "p50_ms": 313.953,
+      "p95_ms": 387.792,
+      "p99_ms": 464.535,
+      "max_ms": 465.543
+    },
+    "ws.hello.steady": {
+      "count": 80,
+      "p50_ms": 240.82,
+      "p95_ms": 331.587,
+      "p99_ms": 346.114,
+      "max_ms": 347.82
+    },
+    "ws.other": {
+      "count": 160,
+      "p50_ms": 108.696,
+      "p95_ms": 165.07,
+      "p99_ms": 200.561,
+      "max_ms": 206.533
+    },
+    "ws.other.steady": {
+      "count": 160,
+      "p50_ms": 108.696,
+      "p95_ms": 165.07,
+      "p99_ms": 200.561,
+      "max_ms": 206.533
+    }
+  },
+  "optimizations": true,
+  "notes": [
+    "Weather is stubbed. FAA credentials are absent, so NOTAM fetches fail closed and clients retry every 15 s.",
+    "The tracker process is in cgroup r2c-loadtest: memory.max=1GiB, swap max=0, cpu.max=1.",
+    "Flags on: R2C_SKIP_EMPTY_DEVICE_NAME, R2C_CACHE_ORG_CONFIG, R2C_DB_POOL_SIZE=20, R2C_DB_MAX_OVERFLOW=40, R2C_SAFE_ZONE_UPSERT, R2C_CAP_UPLOAD_BODY.",
+    "Server CPU was pinned to one core.",
+    "Planned tablets exceed the concurrency cap, so some connects are expected to queue or return 429."
+  ],
+  "client_closes": {
+    "before_hello": 0,
+    "after_hello": 0,
+    "age_s": {
+      "count": 0,
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null
+    },
+    "reasons": {}
+  },
+  "open_sockets_planned": 160,
+  "server_log": {
+    "broadcast_retired_lines": 163,
+    "broadcast_retired_sockets": 288,
+    "closes": {},
+    "errors": {
+      "WebSocket is not connected. Need to call \"accept\" first.": 160
+    }
+  }
+}
